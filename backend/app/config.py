@@ -14,6 +14,22 @@ class Settings(BaseSettings):
     google_content_queue_sheet_name: str = "Content Queue"
     google_campaigns_sheet_name: str = "Campaigns"
     google_campaign_content_queue_sheet_name: str = "Campaign Content Queue"
+    google_posts_sheet_name: str = "Posts"
+    google_business_client_id: str | None = None
+    google_business_client_secret: str | None = None
+    google_business_refresh_token: str | None = None
+    google_business_account_id: str | None = None
+    google_business_location_id: str | None = None
+    google_business_redirect_uri: str | None = None
+    google_business_api_base: str = "https://mybusiness.googleapis.com/v4"
+    meta_graph_api_version: str = "v21.0"
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
+    facebook_page_id: str | None = None
+    facebook_page_access_token: str | None = None
+    instagram_business_account_id: str | None = None
+    public_site_base_url: str | None = None
+    api_public_base_url: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

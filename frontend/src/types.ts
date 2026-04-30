@@ -73,12 +73,23 @@ export type CampaignDraftSet = {
 export type CampaignContentQueueItem = {
   content_id: string;
   campaign_id: string;
-  platform: 'Facebook' | 'Google Business' | 'Instagram' | 'Craigslist' | 'Nextdoor';
+  platform:
+    | 'Facebook'
+    | 'Facebook Page'
+    | 'Google Business'
+    | 'Instagram'
+    | 'Meta Dual'
+    | 'Facebook Groups'
+    | 'Craigslist'
+    | 'Nextdoor';
   draft_text: string;
   cta: string;
   landing_page_url: string;
   image_filename: string | null;
   image_path: string | null;
+  image_url: string | null;
+  business: string | null;
+  post_type: string | null;
   status: string;
   approved: string;
   published: string;
@@ -105,12 +116,34 @@ export type CampaignContentQueueConflictResponse = {
 export type CampaignContentPublishResponse = {
   queue_item: CampaignContentQueueItem;
   publish_result: {
-    external_post_id: string;
-    published_url: string;
+    external_post_id: string | null;
+    published_url: string | null;
+    status: string;
+    published: string;
+    last_publish_error: string | null;
+    notes: string | null;
   };
 };
 
 export type CampaignContentRunDueResponse = {
   published_items: CampaignContentQueueItem[];
   failed_items: CampaignContentQueueItem[];
+};
+
+export type WeeklySocialQueueGenerateRequest = {
+  campaign_id?: string | null;
+  platforms?: CampaignContentQueueItem['platform'][] | null;
+  posts_per_platform?: number;
+  include_facebook_groups?: boolean;
+};
+
+export type ManualSocialPostGenerateRequest = {
+  campaign_id?: string | null;
+  platform?: CampaignContentQueueItem['platform'] | null;
+  post_type?: string;
+};
+
+export type SocialQueueGenerateResponse = {
+  queue_items: CampaignContentQueueItem[];
+  existing: boolean;
 };

@@ -2,11 +2,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.dependencies import get_publishing_workflow_service, get_sheets_service
+from app.api.dependencies import get_publishing_workflow_service, get_sheets_service, get_social_queue_service
 from app.models.campaign_content import (
     CampaignContentPublishResponse,
     CampaignContentQueueItem,
     CampaignContentScheduleRequest,
+    ManualSocialPostGenerateRequest,
+    SocialQueueGenerateResponse,
+    WeeklySocialQueueGenerateRequest,
 )
 from app.services.publishing_workflow_service import (
     CampaignContentPublishNotAllowedError,
@@ -16,6 +19,7 @@ from app.services.publishing_workflow_service import (
 )
 from app.services.publisher_service import PublishingError
 from app.services.sheets_service import SheetsConfigurationError, SheetsDataError, SheetsService
+from app.services.social_queue_service import SocialQueueService
 
 router = APIRouter(prefix="/campaign-content-queue", tags=["campaign-content-queue"])
 
@@ -26,6 +30,62 @@ async def list_campaign_content_queue_items(
 ) -> list[CampaignContentQueueItem]:
     try:
         return sheets_service.list_campaign_content_queue_items()
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/weekly", response_model=list[CampaignContentQueueItem])
+async def list_weekly_social_posts(
+    social_queue_service: SocialQueueService = Depends(get_social_queue_service),
+) -> list[CampaignContentQueueItem]:
+    try:
+        return social_queue_service.list_current_week_posts()
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/generate-weekly", response_model=SocialQueueGenerateResponse)
+async def generate_weekly_social_posts(
+    request: WeeklySocialQueueGenerateRequest,
+    social_queue_service: SocialQueueService = Depends(get_social_queue_service),
+) -> SocialQueueGenerateResponse:
+    try:
+        return social_queue_service.generate_weekly_posts(request)
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/generate-post", response_model=SocialQueueGenerateResponse)
+async def generate_manual_social_post(
+    request: ManualSocialPostGenerateRequest,
+    social_queue_service: SocialQueueService = Depends(get_social_queue_service),
+) -> SocialQueueGenerateResponse:
+    try:
+        return social_queue_service.generate_manual_post(request)
     except SheetsConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -68,6 +128,39 @@ async def mark_campaign_content_queue_item_published(
     return _serialize_updated_item(
         content_id=content_id,
         updated_item=_update_item("published", content_id, sheets_service),
+    )
+
+
+@router.post("/{content_id}/copy", response_model=CampaignContentQueueItem)
+async def mark_campaign_content_queue_item_copied(
+    content_id: str,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    return _serialize_updated_item(
+        content_id=content_id,
+        updated_item=_update_item("copied", content_id, sheets_service),
+    )
+
+
+@router.post("/{content_id}/posted", response_model=CampaignContentQueueItem)
+async def mark_campaign_content_queue_item_posted(
+    content_id: str,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    return _serialize_updated_item(
+        content_id=content_id,
+        updated_item=_update_item("posted", content_id, sheets_service),
+    )
+
+
+@router.post("/{content_id}/skip", response_model=CampaignContentQueueItem)
+async def mark_campaign_content_queue_item_skipped(
+    content_id: str,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    return _serialize_updated_item(
+        content_id=content_id,
+        updated_item=_update_item("skipped", content_id, sheets_service),
     )
 
 
@@ -142,6 +235,12 @@ def _update_item(action: str, content_id: str, sheets_service: SheetsService) ->
             return sheets_service.approve_campaign_content_queue_item(content_id)
         if action == "reject":
             return sheets_service.reject_campaign_content_queue_item(content_id)
+        if action == "copied":
+            return sheets_service.mark_campaign_content_queue_item_copied(content_id)
+        if action == "posted":
+            return sheets_service.mark_campaign_content_queue_item_posted(content_id)
+        if action == "skipped":
+            return sheets_service.mark_campaign_content_queue_item_skipped(content_id)
         return sheets_service.mark_campaign_content_queue_item_published(content_id)
     except SheetsConfigurationError as exc:
         raise HTTPException(

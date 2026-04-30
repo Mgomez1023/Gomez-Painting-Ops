@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.config import Settings, settings
 from app.models.campaign import Campaign
-from app.models.campaign_content import CampaignContentQueueItem, CampaignDraftSet
+from app.models.campaign_content import CampaignContentDueCandidate, CampaignContentQueueItem, CampaignDraftSet
 from app.models.completed_job import CompletedJob
 from app.models.content_draft import ContentDraft
 from app.models.content_queue import ContentQueueItem
@@ -128,6 +128,10 @@ class SheetsService:
         rows = self._fetch_campaign_content_queue_rows()
         return self.rows_to_campaign_content_queue_items(rows)
 
+    def list_posts(self) -> list[CampaignContentQueueItem]:
+        rows = self._fetch_posts_rows()
+        return self.rows_to_campaign_content_queue_items(rows, sheet_label="Posts")
+
     def get_content_queue_items_by_job_id(self, job_id: str) -> list[ContentQueueItem]:
         normalized_job_id = job_id.strip()
         if not normalized_job_id:
@@ -147,6 +151,17 @@ class SheetsService:
         return [
             item
             for item in self.list_campaign_content_queue_items()
+            if item.campaign_id.strip() == normalized_campaign_id
+        ]
+
+    def get_posts_by_campaign_id(self, campaign_id: str) -> list[CampaignContentQueueItem]:
+        normalized_campaign_id = campaign_id.strip()
+        if not normalized_campaign_id:
+            return []
+
+        return [
+            item
+            for item in self.list_posts()
             if item.campaign_id.strip() == normalized_campaign_id
         ]
 
@@ -175,6 +190,26 @@ class SheetsService:
         rows = [self._campaign_content_queue_item_to_row(item) for item in queue_items]
         self._append_campaign_content_queue_rows(rows)
         return queue_items
+
+    def append_campaign_content_queue_items(
+        self,
+        queue_items: list[CampaignContentQueueItem],
+    ) -> list[CampaignContentQueueItem]:
+        if not queue_items:
+            return []
+        rows = [self._campaign_content_queue_item_to_row(item) for item in queue_items]
+        self._append_campaign_content_queue_rows(rows)
+        return queue_items
+
+    def append_posts(
+        self,
+        posts: list[CampaignContentQueueItem],
+    ) -> list[CampaignContentQueueItem]:
+        if not posts:
+            return []
+        rows = [self._campaign_content_queue_item_to_row(item) for item in posts]
+        self._append_posts_rows(rows)
+        return posts
 
     def rows_to_content_queue_items(self, values: list[list[Any]]) -> list[ContentQueueItem]:
         if not values:
@@ -239,7 +274,11 @@ class SheetsService:
 
         return campaigns
 
-    def rows_to_campaign_content_queue_items(self, values: list[list[Any]]) -> list[CampaignContentQueueItem]:
+    def rows_to_campaign_content_queue_items(
+        self,
+        values: list[list[Any]],
+        sheet_label: str = "Campaign Content Queue",
+    ) -> list[CampaignContentQueueItem]:
         if not values:
             return []
 
@@ -247,7 +286,7 @@ class SheetsService:
         missing_headers = self._campaign_content_queue_required_headers().difference(headers)
         if missing_headers:
             missing = ", ".join(sorted(missing_headers))
-            raise SheetsDataError(f"Campaign Content Queue sheet is missing required columns: {missing}")
+            raise SheetsDataError(f"{sheet_label} sheet is missing required columns: {missing}")
 
         queue_items: list[CampaignContentQueueItem] = []
         for row_number, row in enumerate(values[1:], start=2):
@@ -255,10 +294,13 @@ class SheetsService:
                 continue
 
             row_data = dict(zip(headers, row, strict=False))
+            if self._is_blank_campaign_content_queue_identity_row(row_data):
+                continue
+
             try:
                 queue_items.append(self._row_to_campaign_content_queue_item(row_data))
             except ValidationError as exc:
-                raise SheetsDataError(f"Campaign Content Queue row {row_number} is invalid.") from exc
+                raise SheetsDataError(f"{sheet_label} row {row_number} is invalid.") from exc
 
         return queue_items
 
@@ -312,6 +354,81 @@ class SheetsService:
             published_at=published_at,
         )
 
+    def mark_campaign_content_queue_item_copied(self, content_id: str) -> CampaignContentQueueItem | None:
+        return self.update_campaign_content_queue_item_status(
+            content_id=content_id,
+            status="Copied",
+            approved="No",
+            published="No",
+            published_at=None,
+        )
+
+    def mark_campaign_content_queue_item_posted(self, content_id: str) -> CampaignContentQueueItem | None:
+        published_at = self._utc_timestamp()
+        return self.update_campaign_content_queue_item_status(
+            content_id=content_id,
+            status="Posted",
+            approved="Yes",
+            published="Yes",
+            published_at=published_at,
+        )
+
+    def mark_campaign_content_queue_item_skipped(self, content_id: str) -> CampaignContentQueueItem | None:
+        return self.update_campaign_content_queue_item_status(
+            content_id=content_id,
+            status="Skipped",
+            approved="No",
+            published="No",
+            published_at=None,
+        )
+
+    def mark_post_copied(self, content_id: str) -> CampaignContentQueueItem | None:
+        return self.update_post_status(
+            content_id=content_id,
+            status="Copied",
+            approved="No",
+            published="No",
+            published_at=None,
+        )
+
+    def mark_post_posted(self, content_id: str) -> CampaignContentQueueItem | None:
+        published_at = self._utc_timestamp()
+        return self.update_post_status(
+            content_id=content_id,
+            status="Posted",
+            approved="Yes",
+            published="Yes",
+            published_at=published_at,
+        )
+
+    def mark_post_skipped(self, content_id: str) -> CampaignContentQueueItem | None:
+        return self.update_post_status(
+            content_id=content_id,
+            status="Skipped",
+            approved="No",
+            published="No",
+            published_at=None,
+        )
+
+    def restore_post_to_queue(self, content_id: str) -> CampaignContentQueueItem | None:
+        return self.update_post_status(
+            content_id=content_id,
+            status="Draft",
+            approved="No",
+            published="No",
+            published_at=None,
+        )
+
+    def update_post_draft_text(self, content_id: str, draft_text: str) -> CampaignContentQueueItem | None:
+        match = self._find_post_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, post = match
+        updated_post = post.model_copy(update={"draft_text": draft_text})
+        self._update_posts_row(row_number=row_number, item=updated_post)
+        return updated_post
+
     def publish_campaign_content_queue_item(
         self,
         content_id: str,
@@ -341,6 +458,38 @@ class SheetsService:
         self._update_campaign_content_queue_row(row_number=row_number, item=updated_item)
         return updated_item
 
+    def record_campaign_content_publish_result(
+        self,
+        content_id: str,
+        status: str,
+        published: str,
+        published_at: str | None,
+        notes: str,
+        external_post_id: str | None = None,
+        published_url: str | None = None,
+        last_publish_error: str | None = None,
+    ) -> CampaignContentQueueItem | None:
+        match = self._find_campaign_content_queue_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, queue_item = match
+        updated_item = queue_item.model_copy(
+            update={
+                "status": status,
+                "approved": "Yes",
+                "published": published,
+                "published_at": published_at,
+                "publish_attempts": queue_item.publish_attempts + 1,
+                "last_publish_error": last_publish_error,
+                "external_post_id": external_post_id,
+                "published_url": published_url,
+                "notes": notes,
+            }
+        )
+        self._update_campaign_content_queue_row(row_number=row_number, item=updated_item)
+        return updated_item
+
     def schedule_campaign_content_queue_item(
         self,
         content_id: str,
@@ -362,10 +511,28 @@ class SheetsService:
 
     def list_due_campaign_content_queue_items(self, now: datetime | None = None) -> list[CampaignContentQueueItem]:
         current_time = now or datetime.now(timezone.utc)
+        queue_items = self.list_campaign_content_queue_items()
+        candidates_by_id = {
+            candidate.content_id: candidate
+            for candidate in (
+                self._campaign_content_due_candidate(item=item, now=current_time)
+                for item in queue_items
+            )
+        }
         return [
             item
+            for item in queue_items
+            if candidates_by_id[item.content_id].eligible
+        ]
+
+    def list_campaign_content_due_candidates(
+        self,
+        now: datetime | None = None,
+    ) -> list[CampaignContentDueCandidate]:
+        current_time = now or datetime.now(timezone.utc)
+        return [
+            self._campaign_content_due_candidate(item=item, now=current_time)
             for item in self.list_campaign_content_queue_items()
-            if self._is_due_campaign_content_queue_item(item=item, now=current_time)
         ]
 
     def record_campaign_content_publish_failure(
@@ -383,6 +550,29 @@ class SheetsService:
                 "publish_attempts": queue_item.publish_attempts + 1,
                 "last_publish_error": error_message,
                 "published": "No",
+            }
+        )
+        self._update_campaign_content_queue_row(row_number=row_number, item=updated_item)
+        return updated_item
+
+    def record_campaign_content_manual_fallback(
+        self,
+        content_id: str,
+        error_message: str,
+        copy_ready_package: str,
+    ) -> CampaignContentQueueItem | None:
+        match = self._find_campaign_content_queue_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, queue_item = match
+        updated_item = queue_item.model_copy(
+            update={
+                "status": "Ready for Manual Post",
+                "publish_attempts": queue_item.publish_attempts + 1,
+                "last_publish_error": error_message,
+                "published": "No",
+                "notes": self._append_note(queue_item.notes, copy_ready_package),
             }
         )
         self._update_campaign_content_queue_row(row_number=row_number, item=updated_item)
@@ -416,6 +606,33 @@ class SheetsService:
         )
         self._update_campaign_content_queue_row(row_number=row_number, item=updated_item)
         return updated_item
+
+    def update_post_status(
+        self,
+        content_id: str,
+        status: str,
+        approved: str,
+        published: str,
+        published_at: str | None,
+        notes: str | None = None,
+    ) -> CampaignContentQueueItem | None:
+        match = self._find_post_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, post = match
+        update_payload = {
+            "status": status,
+            "approved": approved,
+            "published": published,
+            "published_at": published_at,
+        }
+        if notes is not None:
+            update_payload["notes"] = notes
+
+        updated_post = post.model_copy(update=update_payload)
+        self._update_posts_row(row_number=row_number, item=updated_post)
+        return updated_post
 
     def rows_to_completed_jobs(self, values: list[list[Any]]) -> list[CompletedJob]:
         if not values:
@@ -517,6 +734,24 @@ class SheetsService:
             .execute()
         )
 
+    def _append_posts_rows(self, rows: list[list[str]]) -> None:
+        spreadsheet_id = self._get_spreadsheet_id()
+        sheet_name = self.settings.google_posts_sheet_name
+        range_name = f"'{sheet_name}'!A:S"
+        (
+            self._get_sheets_client()
+            .spreadsheets()
+            .values()
+            .append(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": rows},
+            )
+            .execute()
+        )
+
     def _fetch_content_queue_rows(self) -> list[list[Any]]:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_content_queue_sheet_name
@@ -533,6 +768,19 @@ class SheetsService:
     def _fetch_campaign_content_queue_rows(self) -> list[list[Any]]:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_campaign_content_queue_sheet_name
+        range_name = f"'{sheet_name}'!A:S"
+        result = (
+            self._get_sheets_client()
+            .spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=range_name)
+            .execute()
+        )
+        return result.get("values", [])
+
+    def _fetch_posts_rows(self) -> list[list[Any]]:
+        spreadsheet_id = self._get_spreadsheet_id()
+        sheet_name = self.settings.google_posts_sheet_name
         range_name = f"'{sheet_name}'!A:S"
         result = (
             self._get_sheets_client()
@@ -599,6 +847,35 @@ class SheetsService:
 
         return None
 
+    def _find_post_row_by_id(
+        self, content_id: str
+    ) -> tuple[int, CampaignContentQueueItem] | None:
+        normalized_content_id = content_id.strip()
+        if not normalized_content_id:
+            return None
+
+        rows = self._fetch_posts_rows()
+        if not rows:
+            return None
+
+        headers = [self._normalize_header(header) for header in rows[0]]
+        missing_headers = self._campaign_content_queue_required_headers().difference(headers)
+        if missing_headers:
+            missing = ", ".join(sorted(missing_headers))
+            raise SheetsDataError(f"Posts sheet is missing required columns: {missing}")
+
+        for row_number, row in enumerate(rows[1:], start=2):
+            row_data = dict(zip(headers, row, strict=False))
+            if self._read_cell(row_data, "content_id") != normalized_content_id:
+                continue
+
+            try:
+                return row_number, self._row_to_campaign_content_queue_item(row_data)
+            except ValidationError as exc:
+                raise SheetsDataError(f"Posts row {row_number} is invalid.") from exc
+
+        return None
+
     def _update_content_queue_row(self, row_number: int, item: ContentQueueItem) -> None:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_content_queue_sheet_name
@@ -619,6 +896,23 @@ class SheetsService:
     def _update_campaign_content_queue_row(self, row_number: int, item: CampaignContentQueueItem) -> None:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_campaign_content_queue_sheet_name
+        range_name = f"'{sheet_name}'!A{row_number}:S{row_number}"
+        (
+            self._get_sheets_client()
+            .spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption="RAW",
+                body={"values": [self._campaign_content_queue_item_to_row(item)]},
+            )
+            .execute()
+        )
+
+    def _update_posts_row(self, row_number: int, item: CampaignContentQueueItem) -> None:
+        spreadsheet_id = self._get_spreadsheet_id()
+        sheet_name = self.settings.google_posts_sheet_name
         range_name = f"'{sheet_name}'!A{row_number}:S{row_number}"
         (
             self._get_sheets_client()
@@ -797,6 +1091,11 @@ class SheetsService:
             landing_page_url=SheetsService._read_cell(row_data, "landing_page_url"),
             image_filename=SheetsService._read_optional_cell(row_data, "image_filename"),
             image_path=SheetsService._read_optional_cell(row_data, "image_path"),
+            image_url=SheetsService._read_optional_cell(row_data, "image_url"),
+            business=SheetsService._read_optional_cell(row_data, "business")
+            or SheetsService._read_note_value(SheetsService._read_cell(row_data, "notes"), "Business"),
+            post_type=SheetsService._read_optional_cell(row_data, "post_type")
+            or SheetsService._read_note_value(SheetsService._read_cell(row_data, "notes"), "Post Type"),
             status=SheetsService._read_cell(row_data, "status"),
             approved=SheetsService._read_cell(row_data, "approved"),
             published=SheetsService._read_cell(row_data, "published"),
@@ -851,7 +1150,23 @@ class SheetsService:
             "last_publish_error",
             "external_post_id",
             "published_url",
+            "image_url",
+            "business",
+            "post_type",
         }
+
+    @staticmethod
+    def _is_blank_campaign_content_queue_identity_row(row_data: dict[str, Any]) -> bool:
+        identity_fields = {
+            "content_id",
+            "campaign_id",
+            "platform",
+            "draft_text",
+            "cta",
+            "landing_page_url",
+            "created_at",
+        }
+        return all(not SheetsService._read_cell(row_data, field) for field in identity_fields)
 
     @staticmethod
     def _normalize_header(header: Any) -> str:
@@ -886,6 +1201,15 @@ class SheetsService:
             raise SheetsDataError(f"Invalid integer value: {value}") from exc
 
     @staticmethod
+    def _read_note_value(notes: str, key: str) -> str | None:
+        prefix = f"{key}:"
+        for line in notes.splitlines():
+            if line.strip().lower().startswith(prefix.lower()):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+        return None
+
+    @staticmethod
     def _parse_iso_datetime(value: str) -> datetime:
         normalized = value.strip()
         try:
@@ -898,15 +1222,62 @@ class SheetsService:
 
     @staticmethod
     def _is_due_campaign_content_queue_item(item: CampaignContentQueueItem, now: datetime) -> bool:
-        if item.approved != "Yes" or item.published == "Yes" or not item.scheduled_at:
-            return False
-        if item.status in {"Rejected", "Published"}:
-            return False
-        try:
-            scheduled_at = SheetsService._parse_iso_datetime(item.scheduled_at)
-        except SheetsDataError:
-            return False
-        return scheduled_at <= now
+        return not SheetsService._campaign_content_due_skip_reasons(item=item, now=now)
+
+    @staticmethod
+    def _campaign_content_due_candidate(
+        item: CampaignContentQueueItem,
+        now: datetime,
+    ) -> CampaignContentDueCandidate:
+        skip_reasons = SheetsService._campaign_content_due_skip_reasons(item=item, now=now)
+        return CampaignContentDueCandidate(
+            content_id=item.content_id,
+            platform=item.platform,
+            status=item.status,
+            approved=item.approved,
+            published=item.published,
+            scheduled=bool(item.scheduled_at),
+            scheduled_at=item.scheduled_at,
+            eligible=not skip_reasons,
+            skip_reasons=skip_reasons,
+        )
+
+    @staticmethod
+    def _campaign_content_due_skip_reasons(item: CampaignContentQueueItem, now: datetime) -> list[str]:
+        skip_reasons: list[str] = []
+
+        if item.approved != "Yes":
+            skip_reasons.append("Approved must be Yes.")
+        if item.published == "Yes":
+            skip_reasons.append("Published must not be Yes.")
+        if not item.scheduled_at:
+            skip_reasons.append("Scheduled At is required.")
+        if item.status == "Needs Review":
+            skip_reasons.append("Status must not be Needs Review.")
+        if item.status == "Ready for Manual Post":
+            skip_reasons.append("Status must not be Ready for Manual Post.")
+        if item.status == "Ready for Meta Business Suite":
+            skip_reasons.append("Status must not be Ready for Meta Business Suite.")
+        if item.status == "Publish Blocked":
+            skip_reasons.append("Status must not be Publish Blocked.")
+        if item.status == "Rejected":
+            skip_reasons.append("Status must not be Rejected.")
+        if item.status == "Published":
+            skip_reasons.append("Status must not be Published.")
+        if item.scheduled_at:
+            try:
+                scheduled_at = SheetsService._parse_iso_datetime(item.scheduled_at)
+            except SheetsDataError:
+                skip_reasons.append("Scheduled At must be a valid ISO datetime.")
+            else:
+                if scheduled_at > now:
+                    skip_reasons.append("Scheduled At must be due at or before now.")
+
+        return skip_reasons
+
+    @staticmethod
+    def _append_note(existing_notes: str, note: str) -> str:
+        return f"{existing_notes}\n\n{note}" if existing_notes else note
 
     @staticmethod
     def _format_utc_timestamp(value: datetime) -> str:

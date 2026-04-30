@@ -7,6 +7,7 @@ from app.services.llm_service import LLMService
 from app.services.publisher_service import PublisherService
 from app.services.publishing_workflow_service import PublishingWorkflowService
 from app.services.sheets_service import SheetsService
+from app.services.social_queue_service import SocialQueueService
 
 
 async def get_campaign_agent() -> CampaignAgent:
@@ -36,4 +37,16 @@ async def get_publishing_workflow_service(
     return PublishingWorkflowService(
         sheets_service=sheets_service,
         publisher_service=publisher_service,
+    )
+
+
+async def get_social_queue_service(
+    sheets_service: SheetsService = Depends(get_sheets_service),
+    campaign_agent: CampaignAgent = Depends(get_campaign_agent),
+    campaign_image_service: CampaignImageService = Depends(get_campaign_image_service),
+) -> SocialQueueService:
+    return SocialQueueService(
+        sheets_service=sheets_service,
+        campaign_agent=campaign_agent,
+        campaign_image_service=campaign_image_service,
     )

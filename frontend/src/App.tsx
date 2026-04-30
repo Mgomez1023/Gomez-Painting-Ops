@@ -1,24 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { JSX } from 'react';
 import {
   ApiError,
   approveCampaignContent,
   approveContent,
   generateAndSave,
   generateAndSaveCampaign,
+  generateManualSocialPost,
+  generateWeeklySocialPosts,
   getCampaignContentQueue,
   getCampaigns,
   getContentQueue,
   getJobs,
   getMediaUrl,
+  getWeeklySocialQueue,
+  markCampaignCopied,
   markCampaignPublished,
+  markCampaignPosted,
+  markCampaignSkipped,
   markPublished,
   previewCampaignDrafts,
   previewDraft,
   publishCampaignContent,
   rejectCampaignContent,
   rejectContent,
+  restorePostToQueue,
   runDuePublishing,
   scheduleCampaignContent,
+  updatePostDraftText,
 } from './api';
 import type {
   Campaign,
@@ -30,6 +39,7 @@ import type {
 } from './types';
 
 type BusyAction = string | null;
+type DashboardTab = 'posts' | 'operations';
 
 type QueueGroup = {
   jobId: string;
@@ -69,11 +79,81 @@ const campaignDraftFields: Array<[keyof CampaignDraftSet, string]> = [
 
 const campaignPlatformOrder: Record<CampaignContentQueueItem['platform'], number> = {
   Facebook: 1,
-  'Google Business': 2,
-  Instagram: 3,
-  Craigslist: 4,
-  Nextdoor: 5,
+  'Facebook Page': 1,
+  Instagram: 2,
+  'Meta Dual': 3,
+  'Google Business': 4,
+  'Facebook Groups': 5,
+  Craigslist: 6,
+  Nextdoor: 7,
 };
+
+const manualPlatformOptions: CampaignContentQueueItem['platform'][] = [
+  'Google Business',
+  'Meta Dual',
+  'Facebook Groups',
+];
+
+const postTypeOptions = ['General', 'Project Highlight', 'Before and After', 'Offer', 'Review Request'];
+
+type IconName = 'check' | 'copy' | 'download' | 'edit' | 'restore' | 'save' | 'skip' | 'x';
+
+function Icon({ name }: { name: IconName }) {
+  const paths: Record<IconName, JSX.Element> = {
+    check: <path d="M20 6 9 17l-5-5" />,
+    copy: (
+      <>
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </>
+    ),
+    edit: (
+      <>
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      </>
+    ),
+    download: (
+      <>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <path d="M7 10l5 5 5-5" />
+        <path d="M12 15V3" />
+      </>
+    ),
+    restore: (
+      <>
+        <path d="M3 12a9 9 0 1 0 3-6.7" />
+        <path d="M3 4v6h6" />
+      </>
+    ),
+    save: (
+      <>
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+        <path d="M17 21v-8H7v8" />
+        <path d="M7 3v5h8" />
+      </>
+    ),
+    skip: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="m9 9 6 6" />
+        <path d="m15 9-6 6" />
+      </>
+    ),
+    x: (
+      <>
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </>
+    ),
+  };
+
+  return (
+    <svg aria-hidden="true" className="button-icon" fill="none" viewBox="0 0 24 24">
+      {paths[name]}
+    </svg>
+  );
+}
 
 function queueGroupDomId(jobId: string) {
   return `queue-group-${jobId.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
@@ -85,7 +165,9 @@ function campaignQueueGroupDomId(campaignId: string) {
 
 function formatCampaignCopyPackage(item: CampaignContentQueueItem) {
   return [
-    `Platform: ${item.platform}`,
+    `Platform: ${formatPlatformLabel(item.platform)}`,
+    `Business: ${getCampaignItemBusiness(item)}`,
+    `Scheduled: ${formatDisplayDate(item.scheduled_at)}`,
     '',
     'Post:',
     item.draft_text,
@@ -94,14 +176,116 @@ function formatCampaignCopyPackage(item: CampaignContentQueueItem) {
     `URL: ${item.landing_page_url}`,
     `Image: ${item.image_filename ?? 'None selected'}`,
     `Image Path: ${item.image_path ?? 'None selected'}`,
+    `Image URL: ${item.image_url ?? 'None selected'}`,
   ].join('\n');
+}
+
+function formatWeeklyPostPackage(item: CampaignContentQueueItem) {
+  return [
+    `${formatPlatformLabel(item.platform)} post`,
+    `Business: ${getCampaignItemBusiness(item)}`,
+    `Scheduled: ${formatDisplayDate(item.scheduled_at)}`,
+    '',
+    item.draft_text,
+    '',
+    `CTA: ${item.cta}`,
+    `Landing Page: ${item.landing_page_url}`,
+    `Image: ${item.image_url ?? item.image_path ?? item.image_filename ?? 'None selected'}`,
+  ].join('\n');
+}
+
+function formatMetaBusinessSuitePackage(item: CampaignContentQueueItem) {
+  const savedPackageIndex = item.notes.indexOf('Meta Business Suite Package');
+  if (savedPackageIndex >= 0) {
+    return item.notes.slice(savedPackageIndex).trim();
+  }
+
+  const targets = new Set(
+    item.platform === 'Meta Dual'
+      ? ['Facebook', 'Instagram']
+      : item.platform === 'Instagram'
+        ? ['Instagram']
+        : ['Facebook'],
+  );
+
+  return [
+    'Meta Business Suite Package',
+    '',
+    'Facebook caption:',
+    targets.has('Facebook') ? item.draft_text : 'Not targeted by this row.',
+    '',
+    'Instagram caption:',
+    targets.has('Instagram') ? item.draft_text : 'Not targeted by this row.',
+    '',
+    `Image URL/Path: ${item.image_url ?? item.image_path ?? 'None selected'}`,
+    `CTA: ${item.cta}`,
+    `Landing Page: ${item.landing_page_url}`,
+    `Suggested Schedule Time: ${item.scheduled_at ?? 'Post when ready.'}`,
+  ].join('\n');
+}
+
+function getCampaignItemImageSource(item: CampaignContentQueueItem) {
+  return item.image_url ?? item.image_path;
+}
+
+function getCampaignItemImageFilename(item: CampaignContentQueueItem) {
+  if (item.image_filename) return item.image_filename;
+  const imageSource = getCampaignItemImageSource(item);
+  if (!imageSource) return `${item.content_id}.jpg`;
+  try {
+    const parsedUrl = new URL(imageSource, window.location.origin);
+    const filename = parsedUrl.pathname.split('/').filter(Boolean).pop();
+    return filename || `${item.content_id}.jpg`;
+  } catch {
+    return imageSource.split('/').filter(Boolean).pop() || `${item.content_id}.jpg`;
+  }
+}
+
+function formatPlatformLabel(platform: CampaignContentQueueItem['platform'] | ContentQueueItem['platform']) {
+  if (platform === 'Meta Dual') return 'Facebook + Instagram';
+  if (platform === 'Facebook Page') return 'Facebook + Instagram';
+  return platform;
+}
+
+function getCampaignItemBusiness(item: CampaignContentQueueItem) {
+  return item.business ?? readNoteValue(item.notes, 'Business') ?? item.campaign_id;
+}
+
+function readNoteValue(notes: string, key: string) {
+  const prefix = `${key.toLowerCase()}:`;
+  const line = notes.split('\n').find((noteLine) => noteLine.trim().toLowerCase().startsWith(prefix));
+  return line?.split(':', 2)[1]?.trim() || null;
+}
+
+function formatDisplayDate(value: string | null) {
+  if (!value) return 'Not scheduled';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function isMetaPlatform(platform: CampaignContentQueueItem['platform']) {
+  return ['Facebook', 'Facebook Page', 'Instagram', 'Meta Dual'].includes(platform);
 }
 
 function isCampaignItemPublishable(item: CampaignContentQueueItem) {
   if (
     item.status === 'Rejected' ||
     item.status === 'Needs Review' ||
+    item.status === 'Draft' ||
+    item.status === 'Copied' ||
+    item.status === 'Posted' ||
+    item.status === 'Skipped' ||
     item.status === 'Published' ||
+    item.status === 'Publish Blocked' ||
+    item.status === 'Ready for Manual Post' ||
+    item.status === 'Ready for Meta Business Suite' ||
     item.published === 'Yes'
   ) {
     return false;
@@ -136,20 +320,112 @@ function datetimeLocalToIso(value: string) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+function renderGoogleBusinessPublishStatus(item: CampaignContentQueueItem) {
+  if (item.platform !== 'Google Business') return null;
+
+  if (item.published === 'Yes' || item.status === 'Published') {
+    return (
+      <div className="publisher-status publisher-status-published">
+        <strong>Published to Google Business</strong>
+        {item.published_url ? (
+          <a href={item.published_url} rel="noreferrer" target="_blank">
+            View post
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (item.last_publish_error) {
+    if (item.status === 'Ready for Manual Post') {
+      return (
+        <div className="publisher-status publisher-status-manual">
+          <strong>Ready for Manual Post</strong>
+          <span>Legacy Google My Business API publishing is unavailable. Use Copy Package.</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="publisher-status publisher-status-failed">
+        <strong>Google Business publish failed</strong>
+        <span>{item.last_publish_error}</span>
+      </div>
+    );
+  }
+
+  if (isCampaignItemPublishable(item)) {
+    return (
+      <div className="publisher-status publisher-status-ready">
+        <strong>Ready for Google Business publish</strong>
+        <span>Approved and unpublished.</span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function renderMetaPublishStatus(item: CampaignContentQueueItem) {
+  if (!isMetaPlatform(item.platform)) return null;
+
+  const facebookLine = item.notes
+    .split('\n')
+    .find((line) => line.trim().toLowerCase().startsWith('facebook:'));
+  const instagramLine = item.notes
+    .split('\n')
+    .find((line) => line.trim().toLowerCase().startsWith('instagram:'));
+
+  return (
+    <div
+      className={`publisher-status ${
+        item.status === 'Publish Blocked'
+          ? 'publisher-status-failed'
+          : item.status === 'Ready for Meta Business Suite'
+            ? 'publisher-status-manual'
+            : 'publisher-status-ready'
+      }`}
+    >
+      <strong>Meta publishing</strong>
+      <span>Status: {item.status}</span>
+      {item.status === 'Ready for Meta Business Suite' ? (
+        <span>Copy the Meta package into Meta Business Suite.</span>
+      ) : null}
+      {facebookLine ? <span>Facebook result: {facebookLine.replace(/^Facebook:\s*/i, '')}</span> : null}
+      {instagramLine ? <span>Instagram result: {instagramLine.replace(/^Instagram:\s*/i, '')}</span> : null}
+      {item.external_post_id ? <span>External IDs: {item.external_post_id}</span> : null}
+      {item.published_url ? <span>Published URLs: {item.published_url}</span> : null}
+      {item.last_publish_error ? <span>Last error: {item.last_publish_error}</span> : null}
+    </div>
+  );
+}
+
 function App() {
   const [jobs, setJobs] = useState<CompletedJob[]>([]);
   const [queue, setQueue] = useState<ContentQueueItem[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignQueue, setCampaignQueue] = useState<CampaignContentQueueItem[]>([]);
+  const [weeklyQueue, setWeeklyQueue] = useState<CampaignContentQueueItem[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingQueue, setLoadingQueue] = useState(true);
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
   const [loadingCampaignQueue, setLoadingCampaignQueue] = useState(true);
+  const [loadingWeeklyQueue, setLoadingWeeklyQueue] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('posts');
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null);
   const [scheduleInputs, setScheduleInputs] = useState<Record<string, string>>({});
+  const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
+  const [draftTextEdits, setDraftTextEdits] = useState<Record<string, string>>({});
+  const [selectedCampaignId, setSelectedCampaignId] = useState('');
+  const [manualPlatform, setManualPlatform] =
+    useState<CampaignContentQueueItem['platform']>('Google Business');
+  const [manualPostType, setManualPostType] = useState('General');
+  const [includeFacebookGroups, setIncludeFacebookGroups] = useState(false);
+  const [showGeneratePostOptions, setShowGeneratePostOptions] = useState(false);
+  const [showPreviousPosts, setShowPreviousPosts] = useState(false);
   const [expandedQueueJobs, setExpandedQueueJobs] = useState<Record<string, boolean>>({});
   const [expandedCampaignQueue, setExpandedCampaignQueue] = useState<Record<string, boolean>>({});
   const [preview, setPreview] = useState<{ job: CompletedJob; draft: ContentDraft } | null>(null);
@@ -201,12 +477,24 @@ function App() {
     }
   }, []);
 
+  const loadWeeklyQueue = useCallback(async () => {
+    setLoadingWeeklyQueue(true);
+    try {
+      setWeeklyQueue(await getWeeklySocialQueue());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load weekly posting queue.');
+    } finally {
+      setLoadingWeeklyQueue(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadJobs();
     void loadQueue();
     void loadCampaigns();
     void loadCampaignQueue();
-  }, [loadCampaigns, loadCampaignQueue, loadJobs, loadQueue]);
+    void loadWeeklyQueue();
+  }, [loadCampaigns, loadCampaignQueue, loadJobs, loadQueue, loadWeeklyQueue]);
 
   const queueCounts = useMemo(() => {
     return queue.reduce(
@@ -227,6 +515,22 @@ function App() {
       {} as Record<string, number>,
     );
   }, [campaignQueue]);
+
+  const weeklyQueueItems = useMemo(() => {
+    return [...weeklyQueue].sort((a, b) => {
+      const scheduledCompare = (a.scheduled_at ?? '').localeCompare(b.scheduled_at ?? '');
+      if (scheduledCompare !== 0) return scheduledCompare;
+      return campaignPlatformOrder[a.platform] - campaignPlatformOrder[b.platform];
+    });
+  }, [weeklyQueue]);
+
+  const activeWeeklyQueueItems = useMemo(() => {
+    return weeklyQueueItems.filter((item) => item.status !== 'Posted' && item.status !== 'Skipped');
+  }, [weeklyQueueItems]);
+
+  const previousWeeklyPosts = useMemo(() => {
+    return weeklyQueueItems.filter((item) => item.status === 'Posted' || item.status === 'Skipped');
+  }, [weeklyQueueItems]);
 
   const queueGroups = useMemo<QueueGroup[]>(() => {
     const groups = new Map<string, ContentQueueItem[]>();
@@ -374,6 +678,47 @@ function App() {
     }
   }
 
+  async function handleGenerateWeeklyPosts() {
+    setBusyAction('generate-weekly-posts');
+    setError(null);
+    setWarning(null);
+    try {
+      const result = await generateWeeklySocialPosts({
+        campaign_id: selectedCampaignId || null,
+        include_facebook_groups: includeFacebookGroups,
+      });
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+      setWarning(
+        result.existing
+          ? 'This week already has social posts. Showing the existing queue.'
+          : `Generated ${result.queue_items.length} posts for this week.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to generate weekly posts.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleGenerateManualPost() {
+    setBusyAction('generate-manual-post');
+    setError(null);
+    setWarning(null);
+    try {
+      const result = await generateManualSocialPost({
+        campaign_id: selectedCampaignId || null,
+        platform: manualPlatform,
+        post_type: manualPostType,
+      });
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+      setWarning(`Generated ${result.queue_items.length} additional post.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to generate a post.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function toggleQueueGroup(jobId: string) {
     setExpandedQueueJobs((current) => ({
       ...current,
@@ -453,6 +798,136 @@ function App() {
     }
   }
 
+  async function handleCopyWeeklyPost(item: CampaignContentQueueItem) {
+    const actionKey = `weekly-copy:${item.content_id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API is not available.');
+      }
+
+      await navigator.clipboard.writeText(formatWeeklyPostPackage(item));
+      await markCampaignCopied(item.content_id);
+      setCopiedPackageId(`weekly:${item.content_id}`);
+      window.setTimeout(() => {
+        setCopiedPackageId((current) => (current === `weekly:${item.content_id}` ? null : current));
+      }, 1800);
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? `Unable to copy post. ${err.message}`
+          : 'Unable to copy post. Check browser clipboard permissions and try again.',
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleWeeklyStatusAction(contentId: string, action: 'posted' | 'skipped') {
+    const actionKey = `weekly-${action}:${contentId}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      if (action === 'posted') {
+        await markCampaignPosted(contentId);
+      } else {
+        await markCampaignSkipped(contentId);
+      }
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update weekly post.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleRestoreWeeklyPost(contentId: string) {
+    const actionKey = `weekly-restore:${contentId}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      await restorePostToQueue(contentId);
+      await loadWeeklyQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to restore post to the queue.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function startEditingDraft(item: CampaignContentQueueItem) {
+    setEditingDraftId(item.content_id);
+    setDraftTextEdits((current) => ({
+      ...current,
+      [item.content_id]: current[item.content_id] ?? item.draft_text,
+    }));
+  }
+
+  function cancelEditingDraft(contentId: string) {
+    setEditingDraftId(null);
+    setDraftTextEdits((current) => {
+      const next = { ...current };
+      delete next[contentId];
+      return next;
+    });
+  }
+
+  async function handleSaveDraftText(item: CampaignContentQueueItem) {
+    const draftText = (draftTextEdits[item.content_id] ?? '').trim();
+    if (!draftText) {
+      setError('Draft text cannot be empty.');
+      return;
+    }
+
+    const actionKey = `weekly-save-draft:${item.content_id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      await updatePostDraftText(item.content_id, draftText);
+      setEditingDraftId(null);
+      setDraftTextEdits((current) => {
+        const next = { ...current };
+        delete next[item.content_id];
+        return next;
+      });
+      await loadWeeklyQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save draft text.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleCopyMetaPackage(item: CampaignContentQueueItem) {
+    setError(null);
+    setWarning(null);
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API is not available.');
+      }
+
+      await navigator.clipboard.writeText(formatMetaBusinessSuitePackage(item));
+      setCopiedPackageId(`meta:${item.content_id}`);
+      window.setTimeout(() => {
+        setCopiedPackageId((current) => (current === `meta:${item.content_id}` ? null : current));
+      }, 1800);
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? `Unable to copy Meta package to clipboard. ${err.message}`
+          : 'Unable to copy Meta package to clipboard. Check browser clipboard permissions and try again.',
+      );
+    }
+  }
+
   async function handlePublishCampaignContent(item: CampaignContentQueueItem) {
     const actionKey = `campaign-publish:${item.content_id}`;
     setBusyAction(actionKey);
@@ -507,9 +982,9 @@ function App() {
       await loadCampaignQueue();
       const publishedCount = result.published_items.length;
       const failedCount = result.failed_items.length;
-      setWarning(`Run due publishing completed. Published: ${publishedCount}. Failed: ${failedCount}.`);
+      setWarning(`Publishing run completed. Published: ${publishedCount}. Failed: ${failedCount}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to run due publishing.');
+      setError(err instanceof Error ? err.message : 'Unable to run publishing.');
     } finally {
       setBusyAction(null);
     }
@@ -520,11 +995,13 @@ function App() {
       <header className="topbar">
         <div>
           <h1>Gomez Ops</h1>
-          <p>Completed jobs, generated drafts, and approval status.</p>
+          <p>Weekly social posts, copy-ready captions, and posting status.</p>
         </div>
         <button
           className="secondary-button"
-          onClick={() => void Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue()])}
+          onClick={() =>
+            void Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue(), loadWeeklyQueue()])
+          }
         >
           Refresh
         </button>
@@ -544,6 +1021,30 @@ function App() {
         </section>
       ) : null}
 
+      <div className="dashboard-switcher-wrap">
+        <div className="dashboard-switcher" data-active={activeDashboardTab} role="tablist" aria-label="Dashboard view">
+          <button
+            aria-selected={activeDashboardTab === 'posts'}
+            className={activeDashboardTab === 'posts' ? 'active' : ''}
+            role="tab"
+            type="button"
+            onClick={() => setActiveDashboardTab('posts')}
+          >
+            Posts
+          </button>
+          <button
+            aria-selected={activeDashboardTab === 'operations'}
+            className={activeDashboardTab === 'operations' ? 'active' : ''}
+            role="tab"
+            type="button"
+            onClick={() => setActiveDashboardTab('operations')}
+          >
+            Jobs + Queues
+          </button>
+        </div>
+      </div>
+
+      {activeDashboardTab === 'operations' ? (
       <section className="summary-grid" aria-label="Dashboard summary">
         <div className="metric">
           <span>Completed Jobs</span>
@@ -578,7 +1079,312 @@ function App() {
           <strong>{campaignQueueCounts.Approved ?? 0}</strong>
         </div>
       </section>
+      ) : null}
 
+      {activeDashboardTab === 'posts' ? (
+      <section className="panel weekly-panel">
+        <div className="panel-heading weekly-heading">
+          <div>
+            <h2>Posts to Publish This Week</h2>
+          </div>
+          <div className="panel-heading-actions">
+            {loadingWeeklyQueue ? <span className="loading-label">Loading</span> : null}
+            <button
+              className="secondary-button"
+              disabled={busyAction === 'generate-weekly-posts'}
+              onClick={() => void handleGenerateWeeklyPosts()}
+            >
+              Generate Weekly Posts
+            </button>
+            <button
+              disabled={busyAction === 'generate-manual-post'}
+              onClick={() => setShowGeneratePostOptions((current) => !current)}
+            >
+              Generate Post
+            </button>
+          </div>
+        </div>
+        {showGeneratePostOptions ? (
+          <div className="manual-generate-panel">
+            <div className="generation-controls" aria-label="Post generation settings">
+              <select
+                aria-label="Business"
+                value={selectedCampaignId}
+                onChange={(event) => setSelectedCampaignId(event.target.value)}
+              >
+                <option value="">Default business</option>
+                {campaigns.map((campaign) => (
+                  <option key={campaign.campaign_id} value={campaign.campaign_id}>
+                    {campaign.campaign_name}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Manual post platform"
+                value={manualPlatform}
+                onChange={(event) => setManualPlatform(event.target.value as CampaignContentQueueItem['platform'])}
+              >
+                {manualPlatformOptions.map((platform) => (
+                  <option key={platform} value={platform}>
+                    {formatPlatformLabel(platform)}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Manual post type"
+                value={manualPostType}
+                onChange={(event) => setManualPostType(event.target.value)}
+              >
+                {postTypeOptions.map((postType) => (
+                  <option key={postType} value={postType}>
+                    {postType}
+                  </option>
+                ))}
+              </select>
+              <label className="checkbox-control">
+                <input
+                  checked={includeFacebookGroups}
+                  type="checkbox"
+                  onChange={(event) => setIncludeFacebookGroups(event.target.checked)}
+                />
+                <span>Groups</span>
+              </label>
+            </div>
+            <button
+              className="secondary-button"
+              disabled={busyAction === 'generate-manual-post'}
+              onClick={() => void handleGenerateManualPost()}
+            >
+              Create Post
+            </button>
+          </div>
+        ) : null}
+
+        {activeWeeklyQueueItems.length > 0 ? (
+          <div className="weekly-post-grid">
+            {activeWeeklyQueueItems.map((item) => {
+              const imageSource = getCampaignItemImageSource(item);
+              return (
+                <article className="weekly-post-card" key={item.content_id}>
+                  <div className="weekly-post-media">
+                    {imageSource ? (
+                      <img
+                        alt={item.image_filename ?? `${formatPlatformLabel(item.platform)} post image`}
+                        src={getMediaUrl(imageSource)}
+                      />
+                    ) : (
+                      <span>No image</span>
+                    )}
+                  </div>
+                  <div className="weekly-post-content">
+                    <div className="weekly-post-title-row">
+                      <div>
+                        <h3>{formatPlatformLabel(item.platform)}</h3>
+                        <span>{getCampaignItemBusiness(item)}</span>
+                      </div>
+                      <span className={`status-pill status-${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                        {item.status}
+                      </span>
+                    </div>
+                    <div className="weekly-post-meta">
+                      <span>{formatDisplayDate(item.scheduled_at)}</span>
+                      {item.post_type ? <span>{item.post_type}</span> : null}
+                    </div>
+                    {editingDraftId === item.content_id ? (
+                      <div className="draft-edit-block">
+                        <textarea
+                          aria-label={`Edit ${formatPlatformLabel(item.platform)} draft text`}
+                          value={draftTextEdits[item.content_id] ?? item.draft_text}
+                          onChange={(event) =>
+                            setDraftTextEdits((current) => ({
+                              ...current,
+                              [item.content_id]: event.target.value,
+                            }))
+                          }
+                        />
+                        <div className="draft-edit-actions">
+                          <button
+                            aria-label="Save draft"
+                            className="icon-button secondary-button"
+                            disabled={busyAction === `weekly-save-draft:${item.content_id}`}
+                            title="Save draft"
+                            onClick={() => void handleSaveDraftText(item)}
+                          >
+                            <Icon name="save" />
+                          </button>
+                          <button
+                            aria-label="Cancel draft edit"
+                            className="icon-button"
+                            disabled={busyAction === `weekly-save-draft:${item.content_id}`}
+                            title="Cancel"
+                            onClick={() => cancelEditingDraft(item.content_id)}
+                          >
+                            <Icon name="x" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <details className="caption-block">
+                        <summary>{item.draft_text}</summary>
+                        <p>{item.draft_text}</p>
+                      </details>
+                    )}
+                    <div className="weekly-post-links">
+                      {item.image_url ? (
+                        <a href={item.image_url} rel="noreferrer" target="_blank">
+                          Image URL
+                        </a>
+                      ) : null}
+                      {item.landing_page_url ? (
+                        <a href={item.landing_page_url} rel="noreferrer" target="_blank">
+                          Landing page
+                        </a>
+                      ) : null}
+                      {item.published_url ? (
+                        <a href={item.published_url} rel="noreferrer" target="_blank">
+                          Published post
+                        </a>
+                      ) : null}
+                    </div>
+                    {item.last_publish_error ? <p className="error-text">{item.last_publish_error}</p> : null}
+                  </div>
+                  <div className="weekly-post-actions">
+                    <button
+                      aria-label="Edit draft"
+                      className="icon-button"
+                      disabled={editingDraftId === item.content_id || item.status === 'Posted'}
+                      title="Edit draft"
+                      onClick={() => startEditingDraft(item)}
+                    >
+                      <Icon name="edit" />
+                    </button>
+                    {imageSource ? (
+                      <a
+                        aria-label="Download image"
+                        className="icon-button image-download-button"
+                        download={getCampaignItemImageFilename(item)}
+                        href={getMediaUrl(imageSource)}
+                        rel="noreferrer"
+                        target="_blank"
+                        title="Download image"
+                      >
+                        <Icon name="download" />
+                      </a>
+                    ) : null}
+                    <button
+                      aria-label={copiedPackageId === `weekly:${item.content_id}` ? 'Copied' : 'Copy post'}
+                      className="icon-button"
+                      disabled={busyAction === `weekly-copy:${item.content_id}` || item.status === 'Posted'}
+                      title={copiedPackageId === `weekly:${item.content_id}` ? 'Copied' : 'Copy post'}
+                      onClick={() => void handleCopyWeeklyPost(item)}
+                    >
+                      <Icon name={copiedPackageId === `weekly:${item.content_id}` ? 'check' : 'copy'} />
+                    </button>
+                    <button
+                      aria-label="Mark posted"
+                      className="icon-button"
+                      disabled={busyAction === `weekly-posted:${item.content_id}` || item.status === 'Posted'}
+                      title="Mark posted"
+                      onClick={() => void handleWeeklyStatusAction(item.content_id, 'posted')}
+                    >
+                      <Icon name="check" />
+                    </button>
+                    <button
+                      aria-label="Skip post"
+                      className="icon-button"
+                      disabled={busyAction === `weekly-skipped:${item.content_id}` || item.status === 'Posted'}
+                      title="Skip post"
+                      onClick={() => void handleWeeklyStatusAction(item.content_id, 'skipped')}
+                    >
+                      <Icon name="skip" />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
+        {!loadingWeeklyQueue && activeWeeklyQueueItems.length === 0 ? (
+          <div className="empty-cell">No posts are queued for this week yet.</div>
+        ) : null}
+        <div className="previous-posts-section">
+          <button
+            className="previous-posts-toggle"
+            aria-expanded={showPreviousPosts}
+            onClick={() => setShowPreviousPosts((current) => !current)}
+            type="button"
+          >
+            <span>Previous Posts</span>
+            <span className="previous-posts-count">{previousWeeklyPosts.length}</span>
+          </button>
+          {showPreviousPosts ? (
+            previousWeeklyPosts.length > 0 ? (
+              <div className="previous-post-list">
+                {previousWeeklyPosts.map((item) => {
+                  const imageSource = getCampaignItemImageSource(item);
+                  return (
+                    <article className="previous-post-item" key={item.content_id}>
+                      {imageSource ? (
+                        <img
+                          alt={item.image_filename ?? `${formatPlatformLabel(item.platform)} previous post image`}
+                          src={getMediaUrl(imageSource)}
+                        />
+                      ) : null}
+                      <div className="previous-post-content">
+                        <div className="weekly-post-title-row">
+                          <div>
+                            <h3>{formatPlatformLabel(item.platform)}</h3>
+                            <span>{getCampaignItemBusiness(item)}</span>
+                          </div>
+                          <span className={`status-pill status-${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                            {item.status}
+                          </span>
+                        </div>
+                        <div className="weekly-post-meta">
+                          <span>
+                            {item.status === 'Skipped' ? 'Skipped' : 'Posted'}:{' '}
+                            {formatDisplayDate(item.published_at)}
+                          </span>
+                          <span>Scheduled: {formatDisplayDate(item.scheduled_at)}</span>
+                        </div>
+                        <p>{item.draft_text}</p>
+                      </div>
+                      <button
+                        aria-label="Add back to queue"
+                        className="icon-button"
+                        disabled={busyAction === `weekly-restore:${item.content_id}`}
+                        title="Add back to queue"
+                        onClick={() => void handleRestoreWeeklyPost(item.content_id)}
+                      >
+                        <Icon name="restore" />
+                      </button>
+                      {imageSource ? (
+                        <a
+                          aria-label="Download image"
+                          className="icon-button image-download-button"
+                          download={getCampaignItemImageFilename(item)}
+                          href={getMediaUrl(imageSource)}
+                          rel="noreferrer"
+                          target="_blank"
+                          title="Download image"
+                        >
+                          <Icon name="download" />
+                        </a>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-cell">No previous posts yet.</div>
+            )
+          ) : null}
+        </div>
+      </section>
+      ) : null}
+
+      {activeDashboardTab === 'operations' ? (
+      <>
       <section className="panel">
         <div className="panel-heading">
           <h2>Completed Jobs</h2>
@@ -816,7 +1622,7 @@ function App() {
               disabled={busyAction === 'run-due-publishing'}
               onClick={() => void handleRunDuePublishing()}
             >
-              Run Due Publishing
+              Run Publishing
             </button>
           </div>
         </div>
@@ -870,18 +1676,29 @@ function App() {
                             </div>
                             <p className="queue-draft-text">{item.draft_text}</p>
                             <div className="queue-draft-meta">
-                              {item.image_path ? (
+                              {getCampaignItemImageSource(item) ? (
                                 <a
                                   className="campaign-image-preview"
-                                  href={getMediaUrl(item.image_path)}
+                                  href={getMediaUrl(getCampaignItemImageSource(item) as string)}
                                   rel="noreferrer"
                                   target="_blank"
                                 >
-                                  <img alt={item.image_filename ?? 'Campaign image'} src={getMediaUrl(item.image_path)} />
+                                  <img
+                                    alt={item.image_filename ?? 'Campaign image'}
+                                    src={getMediaUrl(getCampaignItemImageSource(item) as string)}
+                                  />
                                 </a>
                               ) : null}
                               <span>Image: {item.image_filename ?? 'None selected'}</span>
                               {item.image_path ? <span>Image Path: {item.image_path}</span> : null}
+                              {item.image_url ? (
+                                <span>
+                                  Image URL:{' '}
+                                  <a href={item.image_url} rel="noreferrer" target="_blank">
+                                    {item.image_url}
+                                  </a>
+                                </span>
+                              ) : null}
                               <span>CTA: {item.cta}</span>
                               <span>
                                 URL:{' '}
@@ -893,6 +1710,7 @@ function App() {
                               <span>Published: {item.published}</span>
                               <span>Created: {item.created_at}</span>
                               <span>Scheduled At: {item.scheduled_at ?? 'Not scheduled'}</span>
+                              {item.notes ? <span>Notes: {item.notes}</span> : null}
                               {item.published_at ? <span>Published At: {item.published_at}</span> : null}
                               <span>Publish Attempts: {item.publish_attempts}</span>
                               {item.external_post_id ? <span>External Post ID: {item.external_post_id}</span> : null}
@@ -908,6 +1726,8 @@ function App() {
                                 <span className="error-text">Last Publish Error: {item.last_publish_error}</span>
                               ) : null}
                             </div>
+                            {renderGoogleBusinessPublishStatus(item)}
+                            {renderMetaPublishStatus(item)}
                           </div>
                           <div className="action-row queue-actions">
                             {isCampaignItemPublishable(item) ? (
@@ -934,12 +1754,19 @@ function App() {
                             <button onClick={() => void handleCopyCampaignPackage(item)}>
                               {copiedPackageId === item.content_id ? 'Copied!' : 'Copy Package'}
                             </button>
+                            {isMetaPlatform(item.platform) ? (
+                              <button onClick={() => void handleCopyMetaPackage(item)}>
+                                {copiedPackageId === `meta:${item.content_id}` ? 'Copied!' : 'Copy Meta Package'}
+                              </button>
+                            ) : null}
                             {isCampaignItemPublishable(item) ? (
                               <button
                                 disabled={busyAction === `campaign-publish:${item.content_id}`}
                                 onClick={() => void handlePublishCampaignContent(item)}
                               >
-                                Publish
+                                {item.status === 'Publish Failed' || item.status === 'Partially Published'
+                                  ? 'Retry Failed Targets'
+                                  : 'Publish'}
                               </button>
                             ) : null}
                             <button
@@ -974,6 +1801,8 @@ function App() {
           <div className="empty-cell">No campaign content queue items found.</div>
         ) : null}
       </section>
+      </>
+      ) : null}
 
       {preview ? <DraftPreview preview={preview} onClose={() => setPreview(null)} /> : null}
       {campaignPreview ? (

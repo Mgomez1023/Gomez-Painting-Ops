@@ -3,7 +3,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-CampaignPlatform = Literal["Facebook", "Google Business", "Instagram", "Craigslist", "Nextdoor"]
+CampaignPlatform = Literal[
+    "Facebook",
+    "Facebook Page",
+    "Google Business",
+    "Instagram",
+    "Meta Dual",
+    "Facebook Groups",
+    "Craigslist",
+    "Nextdoor",
+]
 
 
 class CampaignDraftSet(BaseModel):
@@ -27,6 +36,9 @@ class CampaignContentQueueItem(BaseModel):
     landing_page_url: str = Field(..., min_length=1)
     image_filename: str | None = None
     image_path: str | None = None
+    image_url: str | None = None
+    business: str | None = None
+    post_type: str | None = None
     status: str = "Needs Review"
     approved: str = "No"
     published: str = "No"
@@ -53,8 +65,12 @@ class CampaignContentQueueConflictResponse(BaseModel):
 
 
 class CampaignContentPublishResult(BaseModel):
-    external_post_id: str
-    published_url: str
+    external_post_id: str | None = None
+    published_url: str | None = None
+    status: str = "Published"
+    published: str = "Yes"
+    last_publish_error: str | None = None
+    notes: str | None = None
 
 
 class CampaignContentPublishResponse(BaseModel):
@@ -69,3 +85,37 @@ class CampaignContentScheduleRequest(BaseModel):
 class CampaignContentRunDueResponse(BaseModel):
     published_items: list[CampaignContentQueueItem]
     failed_items: list[CampaignContentQueueItem]
+
+
+class CampaignContentDueCandidate(BaseModel):
+    content_id: str
+    platform: CampaignPlatform
+    status: str
+    approved: str
+    published: str
+    scheduled: bool
+    scheduled_at: str | None = None
+    eligible: bool
+    skip_reasons: list[str]
+
+
+class WeeklySocialQueueGenerateRequest(BaseModel):
+    campaign_id: str | None = None
+    platforms: list[CampaignPlatform] | None = None
+    posts_per_platform: int = Field(default=3, ge=1, le=7)
+    include_facebook_groups: bool = False
+
+
+class ManualSocialPostGenerateRequest(BaseModel):
+    campaign_id: str | None = None
+    platform: CampaignPlatform | None = None
+    post_type: str = "General"
+
+
+class PostDraftTextUpdateRequest(BaseModel):
+    draft_text: str = Field(..., min_length=1)
+
+
+class SocialQueueGenerateResponse(BaseModel):
+    queue_items: list[CampaignContentQueueItem]
+    existing: bool = False

@@ -13,7 +13,6 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
@@ -104,6 +103,7 @@ GOOGLE_COMPLETED_JOBS_SHEET_NAME=Completed Jobs
 GOOGLE_CONTENT_QUEUE_SHEET_NAME=Content Queue
 GOOGLE_CAMPAIGNS_SHEET_NAME=Campaigns
 GOOGLE_CAMPAIGN_CONTENT_QUEUE_SHEET_NAME=Campaign Content Queue
+GOOGLE_POSTS_SHEET_NAME=Posts
 PUBLISHER_MODE=mock
 ```
 
@@ -167,6 +167,8 @@ Prepare a `Campaign Content Queue` tab with this header row:
 Content ID | Campaign ID | Platform | Draft Text | CTA | Landing Page URL | Image Filename | Image Path | Status | Approved | Published | Created At | Published At | Notes | Scheduled At | Publish Attempts | Last Publish Error | External Post ID | Published URL
 ```
 
+`Image URL` is optional. When present, Google Business publishing prefers it over `Image Path` for media.
+
 Place campaign images in:
 
 ```text
@@ -217,6 +219,80 @@ Clicking a campaign thumbnail opens the full image in a new tab.
 
 Each Campaign Content Queue card has a `Copy Package` button for manual posting. It copies the platform, draft text, CTA, landing page URL, image filename, and image path to your clipboard.
 
+## Weekly Social Queue
+
+The dashboard is organized around `Posts to Publish This Week`. The intended operator workflow is:
+
+```text
+Open dashboard -> review this week's posts -> copy/post in the platform -> mark posted
+```
+
+Weekly generation creates queue items in the `Posts` sheet. The `Posts` tab should use the same columns as `Campaign Content Queue`:
+
+```text
+Content ID | Campaign ID | Platform | Draft Text | CTA | Landing Page URL | Image Filename | Image Path | Status | Approved | Published | Created At | Published At | Notes | Scheduled At | Publish Attempts | Last Publish Error | External Post ID | Published URL
+```
+
+Each post includes platform, business, scheduled date, caption, image path or URL, status, and created timestamp. Status values for this workflow are:
+
+```text
+Draft
+Copied
+Posted
+Skipped
+```
+
+Generate this week's queue:
+
+```bash
+curl -X POST http://127.0.0.1:8000/posts/generate-weekly \
+  -H "Content-Type: application/json" \
+  -d '{"posts_per_platform":3}'
+```
+
+By default, weekly generation creates three posts per platform for:
+
+```text
+Google Business
+Facebook + Instagram
+```
+
+Facebook and Instagram are generated as one combined `Meta Dual` row so the same post can be copied into Meta Business Suite for both channels together.
+
+Optional Facebook Groups rows can be included explicitly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/posts/generate-weekly \
+  -H "Content-Type: application/json" \
+  -d '{"posts_per_platform":3,"include_facebook_groups":true}'
+```
+
+If the selected campaign already has posts for the current ISO week, the endpoint returns the existing items instead of creating duplicates.
+
+Generate one additional post:
+
+```bash
+curl -X POST http://127.0.0.1:8000/posts/generate-post \
+  -H "Content-Type: application/json" \
+  -d '{"platform":"Google Business","post_type":"General"}'
+```
+
+List this week's posts:
+
+```bash
+curl http://127.0.0.1:8000/posts/weekly
+```
+
+Update manual workflow status:
+
+```bash
+curl -X POST http://127.0.0.1:8000/posts/CONTENT-ID/copy
+curl -X POST http://127.0.0.1:8000/posts/CONTENT-ID/posted
+curl -X POST http://127.0.0.1:8000/posts/CONTENT-ID/skip
+```
+
+`copy` sets `Status=Copied` without granting automated publishing approval. `posted` sets `Status=Posted`, `Published=Yes`, and `Published At`. `skip` sets `Status=Skipped`. The separate approval controls remain available for real automated publisher workflows in `Campaign Content Queue`.
+
 Duplicate prevention is enforced in the backend. If a campaign already has saved drafts for all five campaign platforms, the API returns `409 Conflict` with the existing queue items. To intentionally generate a new set, pass `force=true`:
 
 ```bash
@@ -243,7 +319,7 @@ Publish an approved Campaign Content Queue item through the publisher boundary:
 curl -X POST http://127.0.0.1:8000/campaign-content-queue/CCQ-20260428T000000000000Z-facebook/publish
 ```
 
-Schedule an approved Campaign Content Queue item for future publishing:
+Set a `Scheduled At` timestamp on an approved Campaign Content Queue item before using `/publisher/run-due`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/campaign-content-queue/CCQ-20260428T000000000000Z-facebook/schedule \
@@ -251,19 +327,187 @@ curl -X POST http://127.0.0.1:8000/campaign-content-queue/CCQ-20260428T000000000
   -d '{"scheduled_at":"2026-04-30T09:00:00Z"}'
 ```
 
-Run due scheduled publishing locally:
+Run publisher processing locally:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/publisher/run-due
 ```
 
-`/publisher/run-due` finds approved, unpublished Campaign Content Queue rows with `Scheduled At` due at or before the current time. In mock mode it updates successful rows with `Status=Published`, `Published=Yes`, `Published At`, `External Post ID`, `Published URL`, increments `Publish Attempts`, and clears `Last Publish Error`. Failed attempts increment `Publish Attempts` and write `Last Publish Error` without marking the row published.
+`/publisher/run-due` finds approved, unpublished Campaign Content Queue rows where `Scheduled At` is due at or before the current time. In mock mode it updates successful rows with `Status=Published`, `Published=Yes`, `Published At`, `External Post ID`, `Published URL`, increments `Publish Attempts`, and clears `Last Publish Error`. Failed attempts increment `Publish Attempts` and write `Last Publish Error` without marking the row published.
 
-`PublisherService` is the only publishing boundary. `PUBLISHER_MODE=mock` uses a safe mock publisher that returns a fake `external_post_id` and `published_url`, then updates the Google Sheet row to `Status=Published`, `Published=Yes`, `Published At`, `External Post ID`, and `Published URL`. Google Business Profile and Facebook Page publishers are placeholders for future owned or authorized channels only. Gomez Ops does not publish to personal profiles, Facebook Groups, Craigslist, Nextdoor, or any channel without explicit authorization.
+`PublisherService` is the only publishing boundary. `PUBLISHER_MODE=mock` uses a safe mock publisher that returns a fake `external_post_id` and `published_url`, then updates the Google Sheet row to `Status=Published`, `Published=Yes`, `Published At`, `External Post ID`, and `Published URL`. `PUBLISHER_MODE=google_business` publishes only owned Google Business Profile rows. `PUBLISHER_MODE=meta` publishes only owned/authorized Facebook Page, Instagram, or Meta Dual rows through Meta Graph API. Gomez Ops does not publish to personal profiles, Facebook Groups, Craigslist, Nextdoor, or any channel without explicit authorization.
 
-The dashboard shows schedule controls for approved campaign queue items and has a `Run Due Publishing` button for local/manual testing.
+The dashboard shows schedule controls for approved campaign queue items and has a `Run Publishing` button for local/manual testing.
 
 Campaign drafts are designed to drive quote requests through the campaign landing page URL. Approval and mark-published only update Google Sheets status fields; mark-published is still available for manual posting workflows.
+
+## Google Business Profile Publishing
+
+Google Business Profile is the first real automated publisher. It only publishes owned Google Business Profile Local Posts for rows where `Platform` is `Google Business`. It does not publish to Facebook, Instagram, personal profiles, Facebook Groups, Craigslist, Nextdoor, or unauthorized channels.
+
+Human approval remains required. `/publisher/run-due` only processes Campaign Content Queue rows where `Approved=Yes`, `Published=No`, and `Scheduled At` is due.
+
+Required backend environment:
+
+```text
+PUBLISHER_MODE=google_business
+GOOGLE_BUSINESS_CLIENT_ID=your-oauth-client-id
+GOOGLE_BUSINESS_CLIENT_SECRET=your-oauth-client-secret
+GOOGLE_BUSINESS_REFRESH_TOKEN=your-refresh-token
+GOOGLE_BUSINESS_ACCOUNT_ID=your-business-account-id
+GOOGLE_BUSINESS_LOCATION_ID=your-location-id
+GOOGLE_BUSINESS_REDIRECT_URI=optional-oauth-redirect-uri
+GOOGLE_BUSINESS_API_BASE=https://mybusiness.googleapis.com/v4
+```
+
+Credential verification uses the newer Google Business Profile APIs:
+
+```text
+Accounts:  https://mybusinessaccountmanagement.googleapis.com/v1/accounts
+Locations: https://mybusinessbusinessinformation.googleapis.com/v1/accounts/{account_id}/locations
+```
+
+Local Posts publishing still uses the legacy Google My Business v4 endpoint:
+
+```text
+POST https://mybusiness.googleapis.com/v4/accounts/{account_id}/locations/{location_id}/localPosts
+```
+
+This split is expected. A project can successfully verify accounts and locations through the newer APIs while Local Posts publishing fails with an API-disabled error for `mybusiness.googleapis.com`. If publishing returns an API-disabled response for `mybusiness.googleapis.com`, the Google Cloud project likely lacks access to the legacy Google My Business API, which may not appear in normal Cloud API Library search.
+
+OAuth must include this scope:
+
+```text
+https://www.googleapis.com/auth/business.manage
+```
+
+To get a refresh token, create an OAuth client in Google Cloud for an account that has access to the target Business Profile location, complete the OAuth consent flow with the `business.manage` scope, and exchange the authorization code for tokens. Store only the refresh token in `GOOGLE_BUSINESS_REFRESH_TOKEN`; do not put OAuth credentials in the frontend.
+
+Verify credentials without publishing:
+
+```bash
+curl http://127.0.0.1:8000/publisher/google-business/verify
+```
+
+This verifies OAuth plus account/location access through `mybusinessaccountmanagement.googleapis.com` and `mybusinessbusinessinformation.googleapis.com`. It does not prove the project can publish Local Posts through `mybusiness.googleapis.com/v4`.
+
+Test safely in mock mode:
+
+```text
+PUBLISHER_MODE=mock
+```
+
+Then approve and schedule a Campaign Content Queue row and run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/publisher/run-due
+```
+
+Run one Google Business publish job by setting `PUBLISHER_MODE=google_business`, approving only the intended Google Business row, setting `Published=No`, setting `Scheduled At` to a due time, and calling:
+
+```bash
+curl -X POST http://127.0.0.1:8000/publisher/run-due
+```
+
+On success, the queue row is updated with `Published=Yes`, `Published At`, `External Post ID`, `Published URL` when Google returns `searchUrl`, increments `Publish Attempts`, and clears `Last Publish Error`. On failure, it stays unpublished, increments `Publish Attempts`, and saves `Last Publish Error`.
+
+Manual fallback for legacy API-disabled projects:
+
+If Local Posts publishing fails because `mybusiness.googleapis.com` is disabled or unavailable to the project, Gomez Ops does not mark the row published. Instead it updates the row to:
+
+```text
+Status=Ready for Manual Post
+Published=No
+Publish Attempts=incremented
+Last Publish Error=legacy API access explanation
+Notes=copy-ready Google Business post package
+```
+
+Use the generated package in `Notes`, or the dashboard `Copy Package` button, to publish manually in Google Business Profile Manager. After manual posting, use `Mark Published` to close the row.
+
+Google media posts require public image URLs. Local dashboard image paths like `/media/campaigns/example.jpg` are useful for previewing, but they are not sent to Google unless the value is already an `http://` or `https://` URL that Google can fetch.
+
+## Meta Publishing
+
+Meta publishing uses Meta Graph API directly. It does not automate Meta Business Suite and does not rely on Business Suite crossposting. The Meta Business Suite connection is still useful because the Facebook Page and Instagram account must be linked, but API publishing requires valid Graph API tokens and permissions.
+
+Supported Campaign Content Queue platforms:
+
+```text
+Facebook Page
+Instagram
+Meta Dual
+```
+
+Existing `Facebook` rows are also treated as Facebook Page rows for backward compatibility. `Meta Dual` expands internally into two independently tracked targets:
+
+```text
+Facebook
+Instagram
+```
+
+Each target is independently publishable and retryable. If Facebook succeeds and Instagram fails, the row is saved as `Status=Partially Published`, `Published=Partial`, and `Notes` list target-level results. Retry skips any target whose external ID is already recorded.
+
+Required backend environment:
+
+```text
+PUBLISHER_MODE=meta
+META_GRAPH_API_VERSION=v21.0
+META_APP_ID=your-meta-app-id
+META_APP_SECRET=your-meta-app-secret
+FACEBOOK_PAGE_ID=your-page-id
+FACEBOOK_PAGE_ACCESS_TOKEN=your-page-access-token
+INSTAGRAM_BUSINESS_ACCOUNT_ID=your-instagram-business-or-creator-id
+PUBLIC_SITE_BASE_URL=https://your-public-site.example
+API_PUBLIC_BASE_URL=https://your-public-api.example
+```
+
+Tokens are backend-only and are never exposed to the frontend.
+
+When Meta token access is blocked, use export mode:
+
+```text
+PUBLISHER_MODE=meta_export
+```
+
+`meta_export` does not call Meta APIs. For `Facebook Page`, `Instagram`, or `Meta Dual` rows, it generates a copy-ready Meta Business Suite package with Facebook caption, Instagram caption, image URL/path, CTA, landing page, and suggested schedule time. The row is updated to:
+
+```text
+Status=Ready for Meta Business Suite
+Published=No
+Notes=copy-ready Meta Business Suite package
+```
+
+The dashboard shows a `Copy Meta Package` button for Meta rows. `PUBLISHER_MODE=meta` remains available for real Graph API publishing once `FACEBOOK_PAGE_ACCESS_TOKEN` and the required permissions are available.
+
+Facebook Page publishing:
+
+```text
+With public image_url: POST /{page_id}/photos with url + caption
+Without image_url:    POST /{page_id}/feed with message + link
+```
+
+Instagram publishing:
+
+```text
+POST /{ig_user_id}/media with image_url + caption
+POST /{ig_user_id}/media_publish with creation_id
+GET  /{media_id}?fields=id,permalink
+```
+
+Instagram requires a public `image_url` in this phase. If no public image URL exists, the target is marked `Publish Blocked` with:
+
+```text
+Instagram publishing requires a public image URL.
+```
+
+Run Meta diagnostics without publishing:
+
+```bash
+curl http://127.0.0.1:8000/publisher/meta/diagnostics
+```
+
+The diagnostics check the Page token, linked Instagram account, configured Instagram account ID, and token permissions when `META_APP_ID` and `META_APP_SECRET` are available. Typical required permissions include `pages_manage_posts`, `pages_read_engagement`, and `instagram_content_publish`.
 
 Run tests:
 
@@ -278,4 +522,4 @@ pytest
 - `LLMService` owns all language model calls.
 - `SheetsService` is the only intended boundary for Google Sheets access.
 - Generated content is always returned as a draft with `needs_human_review: true`.
-- There is no authentication, SMS, email, social media posting, or autonomous publishing in this milestone.
+- Publishing is restricted to approved, scheduled Campaign Content Queue rows and configured owned/authorized publisher modes.

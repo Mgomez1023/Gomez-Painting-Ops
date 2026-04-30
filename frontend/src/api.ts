@@ -9,6 +9,9 @@ import type {
   ContentDraft,
   ContentQueueItem,
   ContentQueueSaveResponse,
+  ManualSocialPostGenerateRequest,
+  SocialQueueGenerateResponse,
+  WeeklySocialQueueGenerateRequest,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
@@ -81,6 +84,10 @@ export function getCampaignContentQueue(): Promise<CampaignContentQueueItem[]> {
   return request<CampaignContentQueueItem[]>('/campaign-content-queue');
 }
 
+export function getWeeklySocialQueue(): Promise<CampaignContentQueueItem[]> {
+  return request<CampaignContentQueueItem[]>('/posts/weekly');
+}
+
 export function previewDraft(jobId: string): Promise<ContentDraft> {
   return request<ContentDraft>(`/content/generate-from-job/${encodeURIComponent(jobId)}`, {
     method: 'POST',
@@ -128,6 +135,24 @@ export function generateAndSaveCampaign(campaignId: string, force = false): Prom
   );
 }
 
+export function generateWeeklySocialPosts(
+  payload: WeeklySocialQueueGenerateRequest = {},
+): Promise<SocialQueueGenerateResponse> {
+  return request<SocialQueueGenerateResponse>('/posts/generate-weekly', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateManualSocialPost(
+  payload: ManualSocialPostGenerateRequest = {},
+): Promise<SocialQueueGenerateResponse> {
+  return request<SocialQueueGenerateResponse>('/posts/generate-post', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export function approveCampaignContent(contentId: string): Promise<CampaignContentQueueItem> {
   return request<CampaignContentQueueItem>(`/campaign-content-queue/${encodeURIComponent(contentId)}/approve`, {
     method: 'POST',
@@ -147,6 +172,37 @@ export function markCampaignPublished(contentId: string): Promise<CampaignConten
       method: 'POST',
     },
   );
+}
+
+export function markCampaignCopied(contentId: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/copy`, {
+    method: 'POST',
+  });
+}
+
+export function markCampaignPosted(contentId: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/posted`, {
+    method: 'POST',
+  });
+}
+
+export function markCampaignSkipped(contentId: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/skip`, {
+    method: 'POST',
+  });
+}
+
+export function restorePostToQueue(contentId: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/restore`, {
+    method: 'POST',
+  });
+}
+
+export function updatePostDraftText(contentId: string, draftText: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/draft-text`, {
+    method: 'PATCH',
+    body: JSON.stringify({ draft_text: draftText }),
+  });
 }
 
 export function publishCampaignContent(contentId: string): Promise<CampaignContentPublishResponse> {

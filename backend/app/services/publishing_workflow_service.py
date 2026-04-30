@@ -1,12 +1,18 @@
 from datetime import datetime, timezone
 
 from app.models.campaign_content import (
+    CampaignContentDueCandidate,
     CampaignContentPublishResult,
     CampaignContentPublishResponse,
     CampaignContentQueueItem,
     CampaignContentRunDueResponse,
 )
-from app.services.publisher_service import PublisherResult, PublisherService, PublishingError
+from app.services.publisher_service import (
+    ManualPostFallbackRequired,
+    PublisherResult,
+    PublisherService,
+    PublishingError,
+)
 from app.services.sheets_service import SheetsService
 
 
@@ -46,7 +52,7 @@ class PublishingWorkflowService:
         queue_item = self._get_queue_item(content_id)
         self._validate_publishable(queue_item)
         publish_result = self.publisher_service.publish_campaign_content(queue_item)
-        updated_item = self._record_publish_success(queue_item=queue_item, publish_result=publish_result)
+        updated_item = self._record_publish_result(queue_item=queue_item, publish_result=publish_result)
         return CampaignContentPublishResponse(
             queue_item=updated_item,
             publish_result=CampaignContentPublishResult.model_validate(publish_result.model_dump()),
@@ -60,9 +66,19 @@ class PublishingWorkflowService:
             try:
                 self._validate_publishable(queue_item)
                 publish_result = self.publisher_service.publish_campaign_content(queue_item)
-                published_items.append(
-                    self._record_publish_success(queue_item=queue_item, publish_result=publish_result)
+                updated_item = self._record_publish_result(queue_item=queue_item, publish_result=publish_result)
+                if publish_result.succeeded:
+                    published_items.append(updated_item)
+                else:
+                    failed_items.append(updated_item)
+            except ManualPostFallbackRequired as exc:
+                failed_item = self.sheets_service.record_campaign_content_manual_fallback(
+                    content_id=queue_item.content_id,
+                    error_message=str(exc),
+                    copy_ready_package=exc.copy_ready_package,
                 )
+                if failed_item is not None:
+                    failed_items.append(failed_item)
             except (CampaignContentPublishNotAllowedError, PublishingError) as exc:
                 failed_item = self.sheets_service.record_campaign_content_publish_failure(
                     content_id=queue_item.content_id,
@@ -75,6 +91,9 @@ class PublishingWorkflowService:
             published_items=published_items,
             failed_items=failed_items,
         )
+
+    def list_due_candidates(self) -> list[CampaignContentDueCandidate]:
+        return self.sheets_service.list_campaign_content_due_candidates()
 
     def _get_queue_item(self, content_id: str) -> CampaignContentQueueItem:
         queue_item = self.sheets_service.get_campaign_content_queue_item_by_id(content_id)
@@ -98,13 +117,41 @@ class PublishingWorkflowService:
             raise CampaignContentQueueItemNotFoundError(queue_item.content_id)
         return updated_item
 
+    def _record_publish_result(
+        self,
+        queue_item: CampaignContentQueueItem,
+        publish_result: PublisherResult,
+    ) -> CampaignContentQueueItem:
+        if publish_result.status == "Published" and publish_result.published == "Yes":
+            return self._record_publish_success(queue_item=queue_item, publish_result=publish_result)
+
+        updated_item = self.sheets_service.record_campaign_content_publish_result(
+            content_id=queue_item.content_id,
+            status=publish_result.status,
+            published_at=None,
+            published=publish_result.published,
+            external_post_id=publish_result.external_post_id,
+            published_url=publish_result.published_url,
+            last_publish_error=publish_result.last_publish_error,
+            notes=self._append_publish_notes(queue_item.notes, publish_result),
+        )
+        if updated_item is None:
+            raise CampaignContentQueueItemNotFoundError(queue_item.content_id)
+        return updated_item
+
     @staticmethod
     def _validate_publishable(queue_item: CampaignContentQueueItem) -> None:
-        if queue_item.status in {"Rejected", "Needs Review"}:
+        if queue_item.status in {
+            "Rejected",
+            "Needs Review",
+            "Ready for Manual Post",
+            "Ready for Meta Business Suite",
+            "Publish Blocked",
+        }:
             raise CampaignContentPublishNotAllowedError("Campaign content must be approved before publishing.")
         if queue_item.status == "Published" or queue_item.published == "Yes":
             raise CampaignContentPublishNotAllowedError("Campaign content has already been published.")
-        if queue_item.approved != "Yes" and queue_item.status != "Approved":
+        if queue_item.approved != "Yes":
             raise CampaignContentPublishNotAllowedError("Campaign content must be approved before publishing.")
 
     @staticmethod
@@ -116,8 +163,9 @@ class PublishingWorkflowService:
 
     @staticmethod
     def _append_publish_notes(existing_notes: str, publish_result: PublisherResult) -> str:
-        publish_note = (
-            "Published by PublisherService mock publisher: "
+        publish_note = publish_result.notes or (
+            "Published by PublisherService: "
+            f"status={publish_result.status}; "
             f"external_post_id={publish_result.external_post_id}; "
             f"published_url={publish_result.published_url}"
         )
