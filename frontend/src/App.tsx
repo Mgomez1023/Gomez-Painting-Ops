@@ -241,6 +241,17 @@ function getCampaignItemImageFilename(item: CampaignContentQueueItem) {
   }
 }
 
+function downloadBlob(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 function formatPlatformLabel(platform: CampaignContentQueueItem['platform'] | ContentQueueItem['platform']) {
   if (platform === 'Meta Dual') return 'Facebook + Instagram';
   if (platform === 'Facebook Page') return 'Facebook + Instagram';
@@ -905,6 +916,58 @@ function App() {
     }
   }
 
+  async function shareOrSaveImage(item: CampaignContentQueueItem): Promise<void> {
+    const imageSource = getCampaignItemImageSource(item);
+    if (!imageSource) {
+      setError('No image is attached to this post.');
+      return;
+    }
+
+    setError(null);
+    const filename = getCampaignItemImageFilename(item);
+    const imageUrl = getMediaUrl(imageSource);
+
+    let blob: Blob;
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      blob = await response.blob();
+    } catch {
+      setError('Unable to share or download this image. Try opening the image manually.');
+      return;
+    }
+
+    const file =
+      typeof File !== 'undefined'
+        ? new File([blob], filename, {
+            type: blob.type || 'application/octet-stream',
+          })
+        : null;
+
+    if (file && navigator.share && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: getCampaignItemBusiness(item),
+          text: item.draft_text,
+        });
+        return;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return;
+        }
+      }
+    }
+
+    try {
+      downloadBlob(blob, filename);
+    } catch {
+      setError('Unable to share or download this image. Try opening the image manually.');
+    }
+  }
+
   async function handleCopyMetaPackage(item: CampaignContentQueueItem) {
     setError(null);
     setWarning(null);
@@ -1258,19 +1321,15 @@ function App() {
                     >
                       <Icon name="edit" />
                     </button>
-                    {imageSource ? (
-                      <a
-                        aria-label="Download image"
-                        className="icon-button image-download-button"
-                        download={getCampaignItemImageFilename(item)}
-                        href={getMediaUrl(imageSource)}
-                        rel="noreferrer"
-                        target="_blank"
-                        title="Download image"
-                      >
-                        <Icon name="download" />
-                      </a>
-                    ) : null}
+                    <button
+                      aria-label="Share / Save Image"
+                      className="icon-button image-download-button"
+                      title="Share / Save Image. On iPhone, use the share sheet to save to Photos or send to another app. On desktop, the image will download."
+                      type="button"
+                      onClick={() => void shareOrSaveImage(item)}
+                    >
+                      <Icon name="download" />
+                    </button>
                     <button
                       aria-label={copiedPackageId === `weekly:${item.content_id}` ? 'Copied' : 'Copy post'}
                       className="icon-button"
@@ -1358,19 +1417,15 @@ function App() {
                       >
                         <Icon name="restore" />
                       </button>
-                      {imageSource ? (
-                        <a
-                          aria-label="Download image"
-                          className="icon-button image-download-button"
-                          download={getCampaignItemImageFilename(item)}
-                          href={getMediaUrl(imageSource)}
-                          rel="noreferrer"
-                          target="_blank"
-                          title="Download image"
-                        >
-                          <Icon name="download" />
-                        </a>
-                      ) : null}
+                      <button
+                        aria-label="Share / Save Image"
+                        className="icon-button image-download-button"
+                        title="Share / Save Image. On iPhone, use the share sheet to save to Photos or send to another app. On desktop, the image will download."
+                        type="button"
+                        onClick={() => void shareOrSaveImage(item)}
+                      >
+                        <Icon name="download" />
+                      </button>
                     </article>
                   );
                 })}
