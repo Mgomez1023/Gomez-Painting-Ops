@@ -1461,51 +1461,6 @@ function App() {
                     >
                       Post
                     </button>
-                    <button
-                      aria-label="Edit draft"
-                      className="icon-button"
-                      disabled={editingDraftId === item.content_id || item.status === 'Posted'}
-                      title="Edit draft"
-                      onClick={() => startEditingDraft(item)}
-                    >
-                      <Icon name="edit" />
-                    </button>
-                    <button
-                      aria-label="Share / Save Image"
-                      className="icon-button image-download-button"
-                      title="Share / Save Image. On iPhone, use the share sheet to save to Photos or send to another app. On desktop, the image will download."
-                      type="button"
-                      onClick={() => void shareOrSaveImage(item)}
-                    >
-                      <Icon name="download" />
-                    </button>
-                    <button
-                      aria-label={copiedPackageId === `weekly:${item.content_id}` ? 'Copied' : 'Copy post'}
-                      className="icon-button"
-                      disabled={busyAction === `weekly-copy:${item.content_id}` || item.status === 'Posted'}
-                      title={copiedPackageId === `weekly:${item.content_id}` ? 'Copied' : 'Copy post'}
-                      onClick={() => void handleCopyWeeklyPost(item)}
-                    >
-                      <Icon name={copiedPackageId === `weekly:${item.content_id}` ? 'check' : 'copy'} />
-                    </button>
-                    <button
-                      aria-label="Mark posted"
-                      className="icon-button"
-                      disabled={busyAction === `weekly-posted:${item.content_id}` || item.status === 'Posted'}
-                      title="Mark posted"
-                      onClick={() => void handleWeeklyStatusAction(item.content_id, 'posted')}
-                    >
-                      <Icon name="check" />
-                    </button>
-                    <button
-                      aria-label="Skip post"
-                      className="icon-button"
-                      disabled={busyAction === `weekly-skipped:${item.content_id}` || item.status === 'Posted'}
-                      title="Skip post"
-                      onClick={() => void handleWeeklyStatusAction(item.content_id, 'skipped')}
-                    >
-                      <Icon name="skip" />
-                    </button>
                   </div>
                 </article>
               );
