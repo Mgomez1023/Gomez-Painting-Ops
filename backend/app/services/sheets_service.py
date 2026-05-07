@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -939,23 +940,32 @@ class SheetsService:
                 "Google Sheets dependencies are not installed. Run pip install -r requirements.txt."
             ) from exc
 
-        credentials = Credentials.from_service_account_file(
-            self.settings.google_service_account_file,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        if self.settings.google_service_account_json:
+            try:
+                service_account_info = json.loads(self.settings.google_service_account_json)
+            except json.JSONDecodeError as exc:
+                raise SheetsConfigurationError("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.") from exc
+            credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        else:
+            credentials = Credentials.from_service_account_file(
+                self.settings.google_service_account_file,
+                scopes=scopes,
+            )
         self._sheets_client = build("sheets", "v4", credentials=credentials)
         return self._sheets_client
 
     def _get_spreadsheet_id(self) -> str:
         spreadsheet_id = self.settings.google_sheets_spreadsheet_id
         service_account_file = self.settings.google_service_account_file
+        service_account_json = self.settings.google_service_account_json
 
-        if not spreadsheet_id or not service_account_file:
+        if not spreadsheet_id or (not service_account_file and not service_account_json):
             raise SheetsConfigurationError(
                 "Google Sheets is not configured. Set GOOGLE_SHEETS_SPREADSHEET_ID "
-                "and GOOGLE_SERVICE_ACCOUNT_FILE."
+                "and either GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_JSON."
             )
-        if not Path(service_account_file).is_file():
+        if service_account_file and not Path(service_account_file).is_file():
             raise SheetsConfigurationError(f"Google service account file was not found: {service_account_file}")
 
         return spreadsheet_id

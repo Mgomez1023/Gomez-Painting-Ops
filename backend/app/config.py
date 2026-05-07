@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     publisher_mode: str = "mock"
     google_sheets_spreadsheet_id: str | None = None
     google_service_account_file: str | None = None
+    google_service_account_json: str | None = None
     google_completed_jobs_sheet_name: str = "Completed Jobs"
     google_content_queue_sheet_name: str = "Content Queue"
     google_campaigns_sheet_name: str = "Campaigns"

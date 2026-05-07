@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 .env
+.vercel/
 sacred-armor-464719-i6-481907495232.json
 node_modules/
 dist/

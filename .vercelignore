@@ -1,0 +1,11 @@
+.env
+.vercel
+backend/.env
+backend/.pytest_cache
+backend/.venv
+backend/tests
+frontend/.env
+frontend/dist
+frontend/node_modules
+**/__pycache__
+**/*.pyc

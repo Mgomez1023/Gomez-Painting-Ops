@@ -1,0 +1,67 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "cd frontend && npm ci",
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/dist",
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "backend/{app,media}/**",
+      "excludeFiles": "{backend/tests/**,backend/.pytest_cache/**,backend/.venv/**,frontend/**,**/__pycache__/**,**/*.pyc}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/jobs",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/content/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/content-queue/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/campaigns/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/campaign-content-queue/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/posts/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/publisher/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/media/campaigns/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/docs",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/redoc",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/index.html"
+    }
+  ]
+}

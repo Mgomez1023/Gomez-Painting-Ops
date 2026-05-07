@@ -53,6 +53,97 @@ Open:
 http://127.0.0.1:8000/health
 ```
 
+## Vercel Deployment
+
+This repository is ready to deploy from the repository root as one Vercel project:
+
+- Vite builds the dashboard from `frontend/` into `frontend/dist`.
+- FastAPI runs through `api/index.py` as a Vercel Python Function.
+- API routes keep their current paths, such as `/jobs`, `/campaigns`, `/posts`, and `/media/campaigns/...`.
+- In production, the frontend defaults to same-origin API calls, so `VITE_API_BASE_URL` can be left unset on Vercel.
+
+Recommended Vercel project settings:
+
+```text
+Framework Preset: Vite
+Root Directory: .
+Install Command: cd frontend && npm ci
+Build Command: cd frontend && npm run build
+Output Directory: frontend/dist
+```
+
+These settings are already encoded in `vercel.json`, so the Vercel dashboard should pick them up automatically.
+
+Set these Vercel environment variables for Production and Preview:
+
+```text
+APP_NAME=Gomez Ops
+ENVIRONMENT=production
+LLM_PROVIDER=placeholder
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
+PUBLISHER_MODE=mock
+
+GOOGLE_SHEETS_SPREADSHEET_ID=your-spreadsheet-id
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+GOOGLE_COMPLETED_JOBS_SHEET_NAME=Completed Jobs
+GOOGLE_CONTENT_QUEUE_SHEET_NAME=Content Queue
+GOOGLE_CAMPAIGNS_SHEET_NAME=Campaigns
+GOOGLE_CAMPAIGN_CONTENT_QUEUE_SHEET_NAME=Campaign Content Queue
+GOOGLE_POSTS_SHEET_NAME=Posts
+
+PUBLIC_SITE_BASE_URL=https://your-vercel-domain.example
+API_PUBLIC_BASE_URL=https://your-vercel-domain.example
+```
+
+Use `GOOGLE_SERVICE_ACCOUNT_JSON` on Vercel instead of `GOOGLE_SERVICE_ACCOUNT_FILE`; paste the service account JSON as the environment variable value and keep the JSON file out of git. Share the Google Sheet with the service account email.
+
+If you want live publishing instead of mock/manual workflows, set the relevant publisher values too:
+
+```text
+PUBLISHER_MODE=meta_export
+# or PUBLISHER_MODE=meta for real Meta Graph API publishing
+
+GOOGLE_BUSINESS_CLIENT_ID=
+GOOGLE_BUSINESS_CLIENT_SECRET=
+GOOGLE_BUSINESS_REFRESH_TOKEN=
+GOOGLE_BUSINESS_ACCOUNT_ID=
+GOOGLE_BUSINESS_LOCATION_ID=
+GOOGLE_BUSINESS_REDIRECT_URI=
+GOOGLE_BUSINESS_API_BASE=https://mybusiness.googleapis.com/v4
+
+META_GRAPH_API_VERSION=v21.0
+META_APP_ID=
+META_APP_SECRET=
+FACEBOOK_PAGE_ID=
+FACEBOOK_PAGE_ACCESS_TOKEN=
+INSTAGRAM_BUSINESS_ACCOUNT_ID=
+```
+
+Deployment flow:
+
+```bash
+# Option 1: Git deployment
+git push
+# Import the repo in Vercel, add env vars, deploy Preview, then promote to Production.
+
+# Option 2: CLI deployment
+npm i -g vercel
+vercel login
+vercel link
+vercel --prod
+```
+
+After the first deployment, verify:
+
+```text
+https://your-vercel-domain.example/health
+https://your-vercel-domain.example/docs
+https://your-vercel-domain.example/
+```
+
+Then open the dashboard and test the current workflows: list jobs, list campaigns, generate/save a draft, copy a weekly post package, and open a campaign image thumbnail. If publishing to Meta or Google Business, set `PUBLIC_SITE_BASE_URL` and `API_PUBLIC_BASE_URL` to the final public production URL so external platforms can fetch media URLs.
+
 Generate content:
 
 ```bash
@@ -186,6 +277,8 @@ Campaign images rotate deterministically by sorted filename. Each campaign gener
 ```text
 backend/media/campaigns/.rotation_state.json
 ```
+
+On Vercel, the app stores this rotation pointer in the function temp directory because deployed source files are immutable. Rotation still works within warm function instances, but the pointer can reset after a cold start or redeploy. The generated queue rows remain persisted in Google Sheets.
 
 If no supported images exist, campaign generation still succeeds and image fields are left blank.
 

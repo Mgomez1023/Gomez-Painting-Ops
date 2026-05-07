@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 
@@ -24,6 +26,8 @@ class CampaignImageService:
     ) -> None:
         default_media_dir = Path(__file__).resolve().parents[2] / "media" / "campaigns"
         self.media_dir = media_dir or default_media_dir
+        if state_file is None and os.environ.get("VERCEL"):
+            state_file = Path(tempfile.gettempdir()) / "gomez-ops-campaign-rotation-state.json"
         self.state_file = state_file or self.media_dir / ".rotation_state.json"
         self.public_path_prefix = public_path_prefix.rstrip("/")
 
