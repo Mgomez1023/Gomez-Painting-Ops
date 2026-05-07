@@ -40,6 +40,7 @@ import type {
 
 type BusyAction = string | null;
 type DashboardTab = 'posts' | 'operations';
+type PostAssistantCopiedAction = 'caption' | 'package' | null;
 
 type QueueGroup = {
   jobId: string;
@@ -252,6 +253,10 @@ function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(objectUrl);
 }
 
+function openMetaBusinessSuite(): WindowProxy | null {
+  return window.open('https://business.facebook.com/latest/composer', '_blank', 'noopener,noreferrer');
+}
+
 function formatPlatformLabel(platform: CampaignContentQueueItem['platform'] | ContentQueueItem['platform']) {
   if (platform === 'Meta Dual') return 'Facebook + Instagram';
   if (platform === 'Facebook Page') return 'Facebook + Instagram';
@@ -439,6 +444,9 @@ function App() {
   const [showPreviousPosts, setShowPreviousPosts] = useState(false);
   const [expandedQueueJobs, setExpandedQueueJobs] = useState<Record<string, boolean>>({});
   const [expandedCampaignQueue, setExpandedCampaignQueue] = useState<Record<string, boolean>>({});
+  const [postAssistantItem, setPostAssistantItem] = useState<CampaignContentQueueItem | null>(null);
+  const [postAssistantCopiedAction, setPostAssistantCopiedAction] = useState<PostAssistantCopiedAction>(null);
+  const [postAssistantError, setPostAssistantError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ job: CompletedJob; draft: ContentDraft } | null>(null);
   const [campaignPreview, setCampaignPreview] = useState<{ campaign: Campaign; draftSet: CampaignDraftSet } | null>(
     null,
@@ -506,6 +514,19 @@ function App() {
     void loadCampaignQueue();
     void loadWeeklyQueue();
   }, [loadCampaigns, loadCampaignQueue, loadJobs, loadQueue, loadWeeklyQueue]);
+
+  useEffect(() => {
+    if (!postAssistantItem) return undefined;
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        closePostAssistant();
+      }
+    }
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [postAssistantItem]);
 
   const queueCounts = useMemo(() => {
     return queue.reduce(
@@ -838,18 +859,22 @@ function App() {
     }
   }
 
+  async function updateWeeklyStatus(contentId: string, action: 'posted' | 'skipped') {
+    if (action === 'posted') {
+      await markCampaignPosted(contentId);
+    } else {
+      await markCampaignSkipped(contentId);
+    }
+    await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+  }
+
   async function handleWeeklyStatusAction(contentId: string, action: 'posted' | 'skipped') {
     const actionKey = `weekly-${action}:${contentId}`;
     setBusyAction(actionKey);
     setError(null);
     setWarning(null);
     try {
-      if (action === 'posted') {
-        await markCampaignPosted(contentId);
-      } else {
-        await markCampaignSkipped(contentId);
-      }
-      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+      await updateWeeklyStatus(contentId, action);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to update weekly post.');
     } finally {
@@ -919,11 +944,14 @@ function App() {
   async function shareOrSaveImage(item: CampaignContentQueueItem): Promise<void> {
     const imageSource = getCampaignItemImageSource(item);
     if (!imageSource) {
-      setError('No image is attached to this post.');
+      const message = 'No image is attached to this post.';
+      setPostAssistantError(message);
+      setError(message);
       return;
     }
 
     setError(null);
+    setPostAssistantError(null);
     const filename = getCampaignItemImageFilename(item);
     const imageUrl = getMediaUrl(imageSource);
 
@@ -935,7 +963,9 @@ function App() {
       }
       blob = await response.blob();
     } catch {
-      setError('Unable to share or download this image. Try opening the image manually.');
+      const message = 'Unable to share or download this image. Try opening the image manually.';
+      setPostAssistantError(message);
+      setError(message);
       return;
     }
 
@@ -964,7 +994,116 @@ function App() {
     try {
       downloadBlob(blob, filename);
     } catch {
-      setError('Unable to share or download this image. Try opening the image manually.');
+      const message = 'Unable to share or download this image. Try opening the image manually.';
+      setPostAssistantError(message);
+      setError(message);
+    }
+  }
+
+  function openPostAssistant(item: CampaignContentQueueItem) {
+    setPostAssistantItem(item);
+    setPostAssistantCopiedAction(null);
+    setPostAssistantError(null);
+    setError(null);
+    setWarning(null);
+  }
+
+  function closePostAssistant() {
+    setPostAssistantItem(null);
+    setPostAssistantCopiedAction(null);
+    setPostAssistantError(null);
+  }
+
+  async function copyPostAssistantCaption(item: CampaignContentQueueItem) {
+    setError(null);
+    setWarning(null);
+    setPostAssistantError(null);
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API is not available.');
+      }
+
+      await navigator.clipboard.writeText(item.draft_text);
+      setPostAssistantCopiedAction('caption');
+      window.setTimeout(() => {
+        setPostAssistantCopiedAction((current) => (current === 'caption' ? null : current));
+      }, 1800);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? `Unable to copy caption. ${err.message}`
+          : 'Unable to copy caption. Check browser clipboard permissions and try again.';
+      setPostAssistantError(message);
+      setError(message);
+    }
+  }
+
+  async function copyPostAssistantPackage(item: CampaignContentQueueItem) {
+    setError(null);
+    setWarning(null);
+    setPostAssistantError(null);
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API is not available.');
+      }
+
+      const packageText = isMetaPlatform(item.platform)
+        ? formatMetaBusinessSuitePackage(item)
+        : formatWeeklyPostPackage(item);
+      await navigator.clipboard.writeText(packageText);
+      setPostAssistantCopiedAction('package');
+      window.setTimeout(() => {
+        setPostAssistantCopiedAction((current) => (current === 'package' ? null : current));
+      }, 1800);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? `Unable to copy package. ${err.message}`
+          : 'Unable to copy package. Check browser clipboard permissions and try again.';
+      setPostAssistantError(message);
+      setError(message);
+    }
+  }
+
+  async function handlePostAssistantShareImage(item: CampaignContentQueueItem) {
+    if (!getCampaignItemImageSource(item)) {
+      const message = 'No image is attached to this post.';
+      setPostAssistantError(message);
+      setError(message);
+      return;
+    }
+
+    setPostAssistantError(null);
+    await shareOrSaveImage(item);
+  }
+
+  function handleOpenMetaBusinessSuite() {
+    setError(null);
+    setPostAssistantError(null);
+    const openedWindow = openMetaBusinessSuite();
+    if (!openedWindow) {
+      const message = 'Unable to open Meta Business Suite. Please open it manually.';
+      setPostAssistantError(message);
+      setError(message);
+    }
+  }
+
+  async function handlePostAssistantStatusAction(item: CampaignContentQueueItem, action: 'posted' | 'skipped') {
+    const actionKey = `assistant-${action}:${item.content_id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    setPostAssistantError(null);
+    try {
+      await updateWeeklyStatus(item.content_id, action);
+      closePostAssistant();
+      setWarning(action === 'posted' ? 'Post marked as posted.' : 'Post skipped.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to update weekly post.';
+      setPostAssistantError(message);
+      setError(message);
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -1052,6 +1191,9 @@ function App() {
       setBusyAction(null);
     }
   }
+
+  const postAssistantImageSource = postAssistantItem ? getCampaignItemImageSource(postAssistantItem) : null;
+  const postAssistantIsMeta = postAssistantItem ? isMetaPlatform(postAssistantItem.platform) : false;
 
   return (
     <main className="app-shell">
@@ -1312,6 +1454,13 @@ function App() {
                     {item.last_publish_error ? <p className="error-text">{item.last_publish_error}</p> : null}
                   </div>
                   <div className="weekly-post-actions">
+                    <button
+                      className="post-assistant-open-button"
+                      type="button"
+                      onClick={() => openPostAssistant(item)}
+                    >
+                      Post
+                    </button>
                     <button
                       aria-label="Edit draft"
                       className="icon-button"
@@ -1862,6 +2011,121 @@ function App() {
       {preview ? <DraftPreview preview={preview} onClose={() => setPreview(null)} /> : null}
       {campaignPreview ? (
         <CampaignDraftPreview preview={campaignPreview} onClose={() => setCampaignPreview(null)} />
+      ) : null}
+      {postAssistantItem ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closePostAssistant}>
+          <section
+            className="modal-panel post-assistant-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="post-assistant-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2 id="post-assistant-title">Post Assistant</h2>
+                <p>
+                  {postAssistantIsMeta
+                    ? 'Copy the caption, save the image, open Meta Business Suite, then upload from your camera roll or computer.'
+                    : 'Use these steps to publish this post manually. On iPhone, save the image to Photos, then upload it in Meta Business Suite.'}
+                </p>
+              </div>
+              <button
+                aria-label="Close Post Assistant"
+                className="secondary-button"
+                type="button"
+                onClick={closePostAssistant}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="post-assistant-summary">
+              <span>{getCampaignItemBusiness(postAssistantItem)}</span>
+              <span>{formatPlatformLabel(postAssistantItem.platform)}</span>
+              <span>{formatDisplayDate(postAssistantItem.scheduled_at)}</span>
+              {postAssistantItem.post_type ? <span>{postAssistantItem.post_type}</span> : null}
+            </div>
+
+            {postAssistantError ? (
+              <div className="post-assistant-error" role="alert">
+                {postAssistantError}
+              </div>
+            ) : null}
+
+            <div className="post-assistant-layout">
+              <div className="post-assistant-preview">
+                {postAssistantImageSource ? (
+                  <img
+                    alt={postAssistantItem.image_filename ?? `${formatPlatformLabel(postAssistantItem.platform)} post image`}
+                    src={getMediaUrl(postAssistantImageSource)}
+                  />
+                ) : (
+                  <span>No image attached</span>
+                )}
+              </div>
+
+              <div className="post-assistant-details">
+                <label>
+                  <span>Caption</span>
+                  <textarea readOnly value={postAssistantItem.draft_text} />
+                </label>
+                <div className="post-assistant-meta">
+                  <span>
+                    <strong>CTA:</strong> {postAssistantItem.cta}
+                  </span>
+                  <span>
+                    <strong>Landing page:</strong>{' '}
+                    <a href={postAssistantItem.landing_page_url} rel="noreferrer" target="_blank">
+                      {postAssistantItem.landing_page_url}
+                    </a>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="post-assistant-steps">
+              <button type="button" onClick={() => void copyPostAssistantCaption(postAssistantItem)}>
+                <span>Step 1</span>
+                {postAssistantCopiedAction === 'caption' ? 'Caption copied' : 'Copy Caption'}
+              </button>
+              <button type="button" onClick={() => void copyPostAssistantPackage(postAssistantItem)}>
+                <span>Step 1 optional</span>
+                {postAssistantCopiedAction === 'package' ? 'Package copied' : 'Copy Full Package'}
+              </button>
+              <button type="button" onClick={() => void handlePostAssistantShareImage(postAssistantItem)}>
+                <span>Step 2</span>
+                Share / Save Image
+              </button>
+              <button type="button" onClick={handleOpenMetaBusinessSuite}>
+                <span>Step 3</span>
+                Open Meta Business Suite
+              </button>
+              <button
+                className="secondary-button"
+                disabled={busyAction === `assistant-posted:${postAssistantItem.content_id}`}
+                type="button"
+                onClick={() => void handlePostAssistantStatusAction(postAssistantItem, 'posted')}
+              >
+                <span>Step 4</span>
+                Mark as Posted
+              </button>
+            </div>
+
+            <div className="post-assistant-footer">
+              <button type="button" onClick={closePostAssistant}>
+                Close
+              </button>
+              <button
+                disabled={busyAction === `assistant-skipped:${postAssistantItem.content_id}`}
+                type="button"
+                onClick={() => void handlePostAssistantStatusAction(postAssistantItem, 'skipped')}
+              >
+                Skip Post
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </main>
   );
