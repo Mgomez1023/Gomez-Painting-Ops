@@ -1170,17 +1170,17 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <h1>Gomez Ops</h1>
-          <p>Weekly social posts, copy-ready captions, and posting status.</p>
-        </div>
+        <h1>Gomez Ops</h1>
         <button
-          className="secondary-button"
+          aria-label="Refresh"
+          className="icon-button topbar-refresh-button"
+          title="Refresh"
+          type="button"
           onClick={() =>
             void Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue(), loadWeeklyQueue()])
           }
         >
-          Refresh
+          <Icon name="restore" />
         </button>
       </header>
 

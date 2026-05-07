@@ -62,6 +62,10 @@ button:disabled {
   line-height: 1.15;
 }
 
+.topbar-refresh-button {
+  flex: 0 0 auto;
+}
+
 .topbar p,
 .modal-heading p {
   color: #607067;
@@ -828,6 +832,7 @@ th {
 
 .post-assistant-modal {
   max-width: 860px;
+  position: relative;
 }
 
 .modal-heading {
@@ -839,7 +844,11 @@ th {
 }
 
 .post-assistant-close-button {
-  flex: 0 0 auto;
+  min-height: 34px;
+  min-width: 38px;
+  position: absolute;
+  right: 18px;
+  top: 18px;
 }
 
 .post-assistant-summary {
@@ -1005,10 +1014,25 @@ th {
     padding: 16px;
   }
 
-  .topbar,
+  .topbar {
+    align-items: center;
+    flex-direction: row;
+  }
+
   .modal-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .post-assistant-modal .modal-heading {
+    align-items: flex-start;
+    padding-right: 48px;
+  }
+
+  .post-assistant-close-button {
+    right: 14px;
+    top: 14px;
+    width: 38px;
   }
 
   .panel-heading,
