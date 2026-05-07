@@ -838,6 +838,10 @@ th {
   margin-bottom: 16px;
 }
 
+.post-assistant-close-button {
+  flex: 0 0 auto;
+}
+
 .post-assistant-summary {
   color: #607067;
   display: flex;

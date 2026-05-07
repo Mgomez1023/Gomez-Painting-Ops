@@ -40,7 +40,7 @@ import type {
 
 type BusyAction = string | null;
 type DashboardTab = 'posts' | 'operations';
-type PostAssistantCopiedAction = 'caption' | 'package' | null;
+type PostAssistantCopiedAction = 'caption' | null;
 
 type QueueGroup = {
   jobId: string;
@@ -1038,33 +1038,6 @@ function App() {
     }
   }
 
-  async function copyPostAssistantPackage(item: CampaignContentQueueItem) {
-    setError(null);
-    setWarning(null);
-    setPostAssistantError(null);
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('Clipboard API is not available.');
-      }
-
-      const packageText = isMetaPlatform(item.platform)
-        ? formatMetaBusinessSuitePackage(item)
-        : formatWeeklyPostPackage(item);
-      await navigator.clipboard.writeText(packageText);
-      setPostAssistantCopiedAction('package');
-      window.setTimeout(() => {
-        setPostAssistantCopiedAction((current) => (current === 'package' ? null : current));
-      }, 1800);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? `Unable to copy package. ${err.message}`
-          : 'Unable to copy package. Check browser clipboard permissions and try again.';
-      setPostAssistantError(message);
-      setError(message);
-    }
-  }
-
   async function handlePostAssistantShareImage(item: CampaignContentQueueItem) {
     if (!getCampaignItemImageSource(item)) {
       const message = 'No image is attached to this post.';
@@ -1193,7 +1166,6 @@ function App() {
   }
 
   const postAssistantImageSource = postAssistantItem ? getCampaignItemImageSource(postAssistantItem) : null;
-  const postAssistantIsMeta = postAssistantItem ? isMetaPlatform(postAssistantItem.platform) : false;
 
   return (
     <main className="app-shell">
@@ -1979,19 +1951,15 @@ function App() {
             <div className="modal-heading">
               <div>
                 <h2 id="post-assistant-title">Post Assistant</h2>
-                <p>
-                  {postAssistantIsMeta
-                    ? 'Copy the caption, save the image, open Meta Business Suite, then upload from your camera roll or computer.'
-                    : 'Use these steps to publish this post manually. On iPhone, save the image to Photos, then upload it in Meta Business Suite.'}
-                </p>
               </div>
               <button
                 aria-label="Close Post Assistant"
-                className="secondary-button"
+                className="icon-button post-assistant-close-button"
+                title="Close"
                 type="button"
                 onClick={closePostAssistant}
               >
-                Close
+                <Icon name="x" />
               </button>
             </div>
 
@@ -2043,10 +2011,6 @@ function App() {
               <button type="button" onClick={() => void copyPostAssistantCaption(postAssistantItem)}>
                 <span>Step 1</span>
                 {postAssistantCopiedAction === 'caption' ? 'Caption copied' : 'Copy Caption'}
-              </button>
-              <button type="button" onClick={() => void copyPostAssistantPackage(postAssistantItem)}>
-                <span>Step 1 optional</span>
-                {postAssistantCopiedAction === 'package' ? 'Package copied' : 'Copy Full Package'}
               </button>
               <button type="button" onClick={() => void handlePostAssistantShareImage(postAssistantItem)}>
                 <span>Step 2</span>
