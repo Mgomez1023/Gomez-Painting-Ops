@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from app.models.content_draft import ContentDraft
@@ -14,6 +16,26 @@ def test_normalize_header_handles_spaces_slashes_and_casing() -> None:
     assert SheetsService._normalize_header("Paint Colors") == "paint_colors"
     assert SheetsService._normalize_header("Customer Outcome") == "customer_outcome"
     assert SheetsService._normalize_header("Project Highlights") == "project_highlights"
+
+
+def test_parse_service_account_json_accepts_literal_json_with_escaped_private_key_newlines() -> None:
+    service_account_info = SheetsService._parse_service_account_json(
+        '{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n"}'
+    )
+
+    assert service_account_info["type"] == "service_account"
+    assert service_account_info["private_key"] == "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+
+
+def test_parse_service_account_json_accepts_base64_encoded_json() -> None:
+    encoded_value = base64.b64encode(
+        b'{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n"}'
+    ).decode("ascii")
+
+    service_account_info = SheetsService._parse_service_account_json(encoded_value)
+
+    assert service_account_info["type"] == "service_account"
+    assert service_account_info["private_key"] == "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
 
 
 def test_rows_to_completed_jobs_maps_sheet_rows_to_models() -> None:

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import base64
 import json
 from pathlib import Path
 import re
@@ -942,10 +943,7 @@ class SheetsService:
 
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         if self.settings.google_service_account_json:
-            try:
-                service_account_info = json.loads(self.settings.google_service_account_json)
-            except json.JSONDecodeError as exc:
-                raise SheetsConfigurationError("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.") from exc
+            service_account_info = self._parse_service_account_json(self.settings.google_service_account_json)
             credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
         else:
             credentials = Credentials.from_service_account_file(
@@ -969,6 +967,30 @@ class SheetsService:
             raise SheetsConfigurationError(f"Google service account file was not found: {service_account_file}")
 
         return spreadsheet_id
+
+    @staticmethod
+    def _parse_service_account_json(value: str) -> dict[str, Any]:
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise SheetsConfigurationError("GOOGLE_SERVICE_ACCOUNT_JSON is empty.")
+
+        try:
+            service_account_info = json.loads(normalized_value)
+        except json.JSONDecodeError:
+            try:
+                decoded_value = base64.b64decode(normalized_value, validate=True).decode("utf-8")
+                service_account_info = json.loads(decoded_value)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SheetsConfigurationError(
+                    "GOOGLE_SERVICE_ACCOUNT_JSON must be valid JSON or base64-encoded JSON."
+                ) from exc
+
+        if not isinstance(service_account_info, dict):
+            raise SheetsConfigurationError("GOOGLE_SERVICE_ACCOUNT_JSON must decode to a JSON object.")
+        private_key = service_account_info.get("private_key")
+        if isinstance(private_key, str):
+            service_account_info["private_key"] = private_key.replace("\\n", "\n")
+        return service_account_info
 
     def _build_content_queue_items(self, job_id: str, draft: ContentDraft) -> list[ContentQueueItem]:
         created_at = datetime.now(timezone.utc)
