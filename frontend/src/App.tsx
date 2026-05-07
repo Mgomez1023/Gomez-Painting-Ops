@@ -95,7 +95,19 @@ const manualPlatformOptions: CampaignContentQueueItem['platform'][] = [
   'Facebook Groups',
 ];
 
-const postTypeOptions = ['General', 'Project Highlight', 'Before and After', 'Offer', 'Review Request'];
+const postTypeOptions = [
+  'General',
+  'Offer / CTA',
+  'Project Highlight',
+  'Before and After',
+  'Seasonal Reminder',
+  'Problem Solution',
+  'Trust / Local Proof',
+  'FAQ / Education',
+  'Neighborhood Focus',
+  'Preparation Tip',
+  'Review Request',
+];
 
 type IconName = 'check' | 'copy' | 'download' | 'edit' | 'restore' | 'save' | 'skip' | 'x';
 
@@ -714,6 +726,7 @@ function App() {
     setBusyAction('generate-weekly-posts');
     setError(null);
     setWarning(null);
+    const hadWeeklyPosts = activeWeeklyQueueItems.length > 0;
     try {
       const result = await generateWeeklySocialPosts({
         campaign_id: selectedCampaignId || null,
@@ -722,8 +735,10 @@ function App() {
       await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
       setWarning(
         result.existing
-          ? 'This week already has social posts. Showing the existing queue.'
-          : `Generated ${result.queue_items.length} posts for this week.`,
+          ? 'This week already has all scheduled posts. Showing the existing queue.'
+          : hadWeeklyPosts
+            ? 'Generated missing posts for this week.'
+            : 'Generated posts for this week.',
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate weekly posts.');

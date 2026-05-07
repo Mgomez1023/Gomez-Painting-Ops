@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from pydantic import ValidationError
@@ -33,12 +34,25 @@ class LLMService:
 
         raise LLMServiceError(f"Unsupported LLM_PROVIDER: {self.settings.llm_provider}")
 
-    def generate_campaign_draft_set(self, campaign: Campaign, system_prompt: str) -> CampaignDraftSet:
+    def generate_campaign_draft_set(
+        self,
+        campaign: Campaign,
+        system_prompt: str,
+        post_type: str | None = None,
+        platform: str | None = None,
+        avoid_phrases: list[str] | None = None,
+    ) -> CampaignDraftSet:
         provider = self.settings.llm_provider.strip().lower()
         if provider == "placeholder":
-            return self._generate_placeholder_campaign_draft_set(campaign)
+            return self._generate_placeholder_campaign_draft_set(campaign, post_type=post_type)
         if provider == "openai":
-            return self._generate_openai_campaign_draft_set(campaign=campaign, system_prompt=system_prompt)
+            return self._generate_openai_campaign_draft_set(
+                campaign=campaign,
+                system_prompt=system_prompt,
+                post_type=post_type,
+                platform=platform,
+                avoid_phrases=avoid_phrases,
+            )
 
         raise LLMServiceError(f"Unsupported LLM_PROVIDER: {self.settings.llm_provider}")
 
@@ -71,37 +85,99 @@ class LLMService:
             needs_human_review=True,
         )
 
-    def _generate_placeholder_campaign_draft_set(self, campaign: Campaign) -> CampaignDraftSet:
+    def _generate_placeholder_campaign_draft_set(
+        self,
+        campaign: Campaign,
+        post_type: str | None = None,
+    ) -> CampaignDraftSet:
         offer_line = f" {campaign.offer}" if campaign.offer else ""
         local_focus = f"{campaign.service_focus} in {campaign.target_location}"
         quote_line = f"{campaign.cta}: {campaign.landing_page_url}"
+        angle_line = self._placeholder_campaign_angle_line(campaign, post_type)
 
         return CampaignDraftSet(
             facebook_post=(
-                f"Gomez Painting is helping {campaign.target_customer.lower()} with {local_focus}.{offer_line} "
+                f"{angle_line} Gomez Painting is helping {campaign.target_customer.lower()} with {local_focus}.{offer_line} "
                 f"If you are planning a project, request a quote online. {quote_line}"
             ),
             google_business_post=(
-                f"Planning {campaign.service_focus.lower()} near {campaign.target_location}? "
+                f"{angle_line} Planning {campaign.service_focus.lower()} near {campaign.target_location}? "
                 f"Gomez Painting offers local, professional painting services for {campaign.target_customer.lower()}. "
                 f"{offer_line.strip()} {quote_line}".strip()
             ),
             instagram_caption=(
-                f"Fresh paint plans in {campaign.target_location}? Gomez Painting can help with "
+                f"{angle_line} Gomez Painting can help with "
                 f"{campaign.service_focus.lower()}. {campaign.cta}: {campaign.landing_page_url} #GomezPainting"
             ),
             craigslist_post=(
                 f"{campaign.campaign_name}\n\n"
-                f"Gomez Painting is available for {local_focus}. "
+                f"{angle_line} Gomez Painting is available for {local_focus}. "
                 f"Ideal for {campaign.target_customer.lower()}. {offer_line.strip()}\n\n"
                 f"{quote_line}"
             ),
             nextdoor_post=(
-                f"Neighbors in {campaign.target_location}: Gomez Painting is booking {campaign.service_focus.lower()} "
+                f"{angle_line} Gomez Painting is booking {campaign.service_focus.lower()} "
                 f"projects for {campaign.target_customer.lower()}.{offer_line} {quote_line}"
             ),
             confidence=0.82,
             needs_human_review=True,
+        )
+
+    @staticmethod
+    def _placeholder_campaign_angle_line(campaign: Campaign, post_type: str | None) -> str:
+        target = campaign.target_customer.lower()
+        service = campaign.service_focus.lower()
+        location = campaign.target_location
+        angle_lines = {
+            "General": (
+                f"General: {location} {target} can plan {service} with a local painting team."
+            ),
+            "Project Highlight": (
+                f"Project Highlight: A finished {service} project can make a home feel more cared for."
+            ),
+            "Before and After": (
+                f"Before and After: A careful paint refresh can change how a room looks and feels."
+            ),
+            "Seasonal Reminder": (
+                f"Seasonal Reminder: {location} homeowners can plan painting before schedules fill up."
+            ),
+            "Problem Solution": (
+                f"Problem Solution: Scuffed walls and tired color can make a home feel unfinished."
+            ),
+            "Trust Local Proof": (
+                f"Trust Local Proof: Local {target} can work with a painting team that keeps quoting simple."
+            ),
+            "Trust / Local Proof": (
+                f"Trust / Local Proof: Local {target} can work with a painting team that keeps quoting simple."
+            ),
+            "FAQ Education": (
+                f"FAQ Education: A good paint plan starts with the room, surface condition, and finish."
+            ),
+            "FAQ / Education": (
+                f"FAQ / Education: A good paint plan starts with the room, surface condition, and finish."
+            ),
+            "Offer CTA": (
+                f"Offer CTA: The next step for {target} is a straightforward quote request."
+            ),
+            "Offer / CTA": (
+                f"Offer / CTA: The next step for {target} is a straightforward quote request."
+            ),
+            "Offer": (
+                f"Offer: The next step for {target} is a straightforward quote request."
+            ),
+            "Neighborhood Focus": (
+                f"Neighborhood Focus: {location} homes each have their own style, light, and paint needs."
+            ),
+            "Preparation Tip": (
+                f"Preparation Tip: Before a quote, note the rooms, trim, and surfaces that need attention."
+            ),
+            "Review Request": (
+                f"Review Request: Happy customers and finished work help neighbors choose a painter."
+            ),
+        }
+        return angle_lines.get(
+            post_type or "",
+            f"General: {location} {target} can plan {service} with a local painting team.",
         )
 
     @staticmethod
@@ -154,7 +230,24 @@ class LLMService:
 
         return draft.model_copy(update={"needs_human_review": True})
 
-    def _generate_openai_campaign_draft_set(self, campaign: Campaign, system_prompt: str) -> CampaignDraftSet:
+    def _generate_openai_campaign_draft_set(
+        self,
+        campaign: Campaign,
+        system_prompt: str,
+        post_type: str | None = None,
+        platform: str | None = None,
+        avoid_phrases: list[str] | None = None,
+    ) -> CampaignDraftSet:
+        generation_context: dict[str, object] = {
+            "campaign": campaign.model_dump(exclude_none=True),
+        }
+        if post_type:
+            generation_context["post_type"] = post_type
+        if platform:
+            generation_context["platform"] = platform
+        if avoid_phrases:
+            generation_context["avoid_phrases"] = avoid_phrases
+
         try:
             response = self._get_openai_client().responses.parse(
                 model=self.settings.openai_model,
@@ -169,7 +262,7 @@ class LLMService:
                     },
                     {
                         "role": "user",
-                        "content": campaign.model_dump_json(exclude_none=True),
+                        "content": json.dumps(generation_context),
                     },
                 ],
                 text_format=CampaignDraftSet,

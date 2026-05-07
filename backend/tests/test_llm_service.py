@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.config import Settings
@@ -141,6 +143,33 @@ def test_placeholder_provider_returns_deterministic_campaign_draft_set() -> None
     assert draft_set.needs_human_review is True
 
 
+@pytest.mark.parametrize(
+    ("post_type", "expected_phrase"),
+    [
+        ("Offer / CTA", "straightforward quote request"),
+        ("Problem Solution", "Scuffed walls"),
+        ("FAQ / Education", "surface condition"),
+        ("Trust / Local Proof", "keeps quoting simple"),
+        ("Preparation Tip", "note the rooms"),
+    ],
+)
+def test_placeholder_campaign_draft_set_reflects_assigned_post_type(
+    post_type: str,
+    expected_phrase: str,
+) -> None:
+    service = LLMService(app_settings=Settings(llm_provider="placeholder"))
+
+    draft_set = service.generate_campaign_draft_set(
+        campaign=_campaign(),
+        system_prompt="Prompt",
+        post_type=post_type,
+    )
+
+    assert post_type in draft_set.facebook_post
+    assert expected_phrase in draft_set.google_business_post
+    assert draft_set.needs_human_review is True
+
+
 def test_openai_provider_parses_structured_campaign_draft_set_without_real_api_call() -> None:
     fake_client = FakeOpenAIClient(output_parsed=_campaign_draft_set(needs_human_review=False))
     service = LLMService(
@@ -159,3 +188,31 @@ def test_openai_provider_parses_structured_campaign_draft_set_without_real_api_c
     assert fake_client.responses.called_with is not None
     assert fake_client.responses.called_with["model"] == "gpt-4.1-mini"
     assert fake_client.responses.called_with["text_format"] is CampaignDraftSet
+
+
+def test_openai_campaign_generation_sends_post_type_context() -> None:
+    fake_client = FakeOpenAIClient(output_parsed=_campaign_draft_set(needs_human_review=False))
+    service = LLMService(
+        app_settings=Settings(
+            llm_provider="openai",
+            openai_api_key="test-key",
+            openai_model="gpt-4.1-mini",
+        ),
+        client=fake_client,
+    )
+
+    service.generate_campaign_draft_set(
+        campaign=_campaign(),
+        system_prompt="Prompt",
+        post_type="Problem Solution",
+        platform="Meta Dual",
+        avoid_phrases=["Spring is the perfect time"],
+    )
+
+    assert fake_client.responses.called_with is not None
+    user_content = fake_client.responses.called_with["input"][1]["content"]
+    context = json.loads(user_content)
+    assert context["post_type"] == "Problem Solution"
+    assert context["platform"] == "Meta Dual"
+    assert context["avoid_phrases"] == ["Spring is the perfect time"]
+    assert context["campaign"]["campaign_id"] == "CAMP-1001"
