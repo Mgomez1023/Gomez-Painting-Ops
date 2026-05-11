@@ -13,6 +13,7 @@ CampaignPlatform = Literal[
     "Craigslist",
     "Nextdoor",
 ]
+BusinessProfilePlatform = Literal["Facebook", "Instagram", "Google Business"]
 
 
 class CampaignDraftSet(BaseModel):
@@ -99,6 +100,22 @@ class CampaignContentDueCandidate(BaseModel):
     skip_reasons: list[str]
 
 
+class BusinessProfileInput(BaseModel):
+    business_name: str = Field(..., min_length=1)
+    industry: str | None = None
+    service_area_cities: list[str] = Field(default_factory=list)
+    services_offered: list[str] = Field(default_factory=list)
+    website_url: str | None = None
+    phone_number: str | None = None
+    email: str | None = None
+    brand_tone: str | None = None
+    target_customer: str | None = None
+    primary_cta: str | None = None
+    platforms_used: list[BusinessProfilePlatform] = Field(default_factory=list)
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
 class WeeklySocialQueueGenerateRequest(BaseModel):
     campaign_id: str | None = None
     platforms: list[CampaignPlatform] | None = None
@@ -109,12 +126,14 @@ class WeeklySocialQueueGenerateRequest(BaseModel):
     campaign_theme: str | None = None
     separate_meta_platforms: bool = False
     include_facebook_groups: bool = False
+    business_profile: BusinessProfileInput | None = None
 
 
 class ManualSocialPostGenerateRequest(BaseModel):
     campaign_id: str | None = None
     platform: CampaignPlatform | None = None
     post_type: str = "General"
+    business_profile: BusinessProfileInput | None = None
 
 
 class PostDraftTextUpdateRequest(BaseModel):

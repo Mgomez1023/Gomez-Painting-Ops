@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from app.agents.campaign_agent import CampaignAgent
 from app.models.campaign import Campaign
 from app.models.campaign_content import (
+    BusinessProfileInput,
     CampaignContentQueueItem,
     CampaignDraftSet,
     CampaignPlatform,
@@ -21,6 +22,7 @@ DEFAULT_WEEKLY_PLATFORMS: list[CampaignPlatform] = [
     "Meta Dual",
 ]
 POSTS_LANDING_PAGE_URL = "https://marompainting.org"
+# Legacy fallback for existing sheet-backed campaign generation. Business Profile requests use the saved profile website.
 WEEKLY_POST_TYPES = [
     "Seasonal Reminder",
     "Problem Solution",
@@ -77,10 +79,12 @@ class SocialQueueService:
         self,
         request: WeeklySocialQueueGenerateRequest,
     ) -> SocialQueueGenerateResponse:
-        selected_campaign = self._select_campaign(request.campaign_id)
-        if selected_campaign is None:
+        campaign = self._campaign_for_request(
+            campaign_id=request.campaign_id,
+            business_profile=request.business_profile,
+        )
+        if campaign is None:
             return SocialQueueGenerateResponse(queue_items=[], existing=False)
-        campaign = self._campaign_for_posts(selected_campaign)
 
         platforms = self._weekly_platforms(request)
         content_days = request.content_days or request.posts_per_platform
@@ -154,10 +158,12 @@ class SocialQueueService:
         self,
         request: ManualSocialPostGenerateRequest,
     ) -> SocialQueueGenerateResponse:
-        selected_campaign = self._select_campaign(request.campaign_id)
-        if selected_campaign is None:
+        campaign = self._campaign_for_request(
+            campaign_id=request.campaign_id,
+            business_profile=request.business_profile,
+        )
+        if campaign is None:
             return SocialQueueGenerateResponse(queue_items=[], existing=False)
-        campaign = self._campaign_for_posts(selected_campaign)
 
         platform = self._normalize_post_platform(request.platform or "Google Business")
         draft_set = self.campaign_agent.generate_for_post_type(
@@ -190,9 +196,65 @@ class SocialQueueService:
         active_campaigns = [campaign for campaign in campaigns if campaign.status.lower() != "archived"]
         return active_campaigns[0] if active_campaigns else (campaigns[0] if campaigns else None)
 
+    def _campaign_for_request(
+        self,
+        campaign_id: str | None,
+        business_profile: BusinessProfileInput | None = None,
+    ) -> Campaign | None:
+        if business_profile is not None and not campaign_id:
+            return self._campaign_from_business_profile(business_profile)
+
+        selected_campaign = self._select_campaign(campaign_id)
+        if selected_campaign is None:
+            return None
+        return self._campaign_for_posts(selected_campaign)
+
     @staticmethod
     def _campaign_for_posts(campaign: Campaign) -> Campaign:
         return campaign.model_copy(update={"landing_page_url": POSTS_LANDING_PAGE_URL})
+
+    @staticmethod
+    def _campaign_from_business_profile(profile: BusinessProfileInput) -> Campaign:
+        business_name = profile.business_name.strip() or "Marom Painting"
+        services = SocialQueueService._join_profile_values(profile.services_offered)
+        service_focus = services or profile.industry or "painting services"
+        service_area = SocialQueueService._join_profile_values(profile.service_area_cities) or "the local service area"
+        target_customer = profile.target_customer or "local homeowners"
+        cta = profile.primary_cta or "Request a free estimate"
+        website_url = profile.website_url or POSTS_LANDING_PAGE_URL
+        today = datetime.now(timezone.utc).date()
+        platforms = SocialQueueService._join_profile_values(profile.platforms_used)
+        notes = "\n".join(
+            [
+                "Generated from Business Profile",
+                f"Industry: {profile.industry or service_focus}",
+                f"Service Area: {service_area}",
+                f"Services Offered: {service_focus}",
+                f"Brand Tone: {profile.brand_tone or 'Professional, helpful, local'}",
+                f"Target Customer: {target_customer}",
+                f"Phone: {profile.phone_number or ''}",
+                f"Email: {profile.email or ''}",
+                f"Platforms Used: {platforms or 'Facebook, Instagram, Google Business'}",
+            ]
+        )
+        return Campaign(
+            campaign_id="BUSINESS-PROFILE",
+            campaign_name=business_name,
+            service_focus=service_focus,
+            target_location=service_area,
+            target_customer=target_customer,
+            offer=cta,
+            cta=cta,
+            landing_page_url=website_url,
+            start_date=today.isoformat(),
+            end_date=(today + timedelta(days=90)).isoformat(),
+            status="Active",
+            notes=notes,
+        )
+
+    @staticmethod
+    def _join_profile_values(values: list[str] | list[object]) -> str:
+        return ", ".join(str(value).strip() for value in values if str(value).strip())
 
     @staticmethod
     def _weekly_platforms(request: WeeklySocialQueueGenerateRequest) -> list[CampaignPlatform]:
@@ -436,6 +498,8 @@ class SocialQueueService:
             note_lines.append(f"Slot: {slot_index}")
         note_lines.append(f"Post Type: {post_type}")
         note_lines.append(f"Topic: {theme} - {post_type}")
+        if campaign.notes:
+            note_lines.append(f"Business Profile Details: {campaign.notes}")
         notes = "\n".join(note_lines)
         return CampaignContentQueueItem(
             content_id=content_id,

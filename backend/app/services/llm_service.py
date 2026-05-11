@@ -94,34 +94,41 @@ class LLMService:
         local_focus = f"{campaign.service_focus} in {campaign.target_location}"
         quote_line = f"{campaign.cta}: {campaign.landing_page_url}"
         angle_line = self._placeholder_campaign_angle_line(campaign, post_type)
+        business_name = campaign.campaign_name
+        business_hashtag = self._business_hashtag(business_name)
 
         return CampaignDraftSet(
             facebook_post=(
-                f"{angle_line} Gomez Painting is helping {campaign.target_customer.lower()} with {local_focus}.{offer_line} "
+                f"{angle_line} {business_name} is helping {campaign.target_customer.lower()} with {local_focus}.{offer_line} "
                 f"If you are planning a project, request a quote online. {quote_line}"
             ),
             google_business_post=(
                 f"{angle_line} Planning {campaign.service_focus.lower()} near {campaign.target_location}? "
-                f"Gomez Painting offers local, professional painting services for {campaign.target_customer.lower()}. "
+                f"{business_name} offers local, professional {campaign.service_focus.lower()} for {campaign.target_customer.lower()}. "
                 f"{offer_line.strip()} {quote_line}".strip()
             ),
             instagram_caption=(
-                f"{angle_line} Gomez Painting can help with "
-                f"{campaign.service_focus.lower()}. {campaign.cta}: {campaign.landing_page_url} #GomezPainting"
+                f"{angle_line} {business_name} can help with "
+                f"{campaign.service_focus.lower()}. {campaign.cta}: {campaign.landing_page_url} {business_hashtag}"
             ),
             craigslist_post=(
                 f"{campaign.campaign_name}\n\n"
-                f"{angle_line} Gomez Painting is available for {local_focus}. "
+                f"{angle_line} {business_name} is available for {local_focus}. "
                 f"Ideal for {campaign.target_customer.lower()}. {offer_line.strip()}\n\n"
                 f"{quote_line}"
             ),
             nextdoor_post=(
-                f"{angle_line} Gomez Painting is booking {campaign.service_focus.lower()} "
+                f"{angle_line} {business_name} is booking {campaign.service_focus.lower()} "
                 f"projects for {campaign.target_customer.lower()}.{offer_line} {quote_line}"
             ),
             confidence=0.82,
             needs_human_review=True,
         )
+
+    @staticmethod
+    def _business_hashtag(business_name: str) -> str:
+        normalized_name = "".join(character for character in business_name.title() if character.isalnum())
+        return f"#{normalized_name}" if normalized_name else "#LocalBusiness"
 
     @staticmethod
     def _placeholder_campaign_angle_line(campaign: Campaign, post_type: str | None) -> str:

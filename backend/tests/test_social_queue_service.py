@@ -383,6 +383,39 @@ def test_generate_weekly_schedule_uses_selected_week_days_platforms_and_content_
     assert "Instagram caption" in instagram_item.draft_text
 
 
+def test_generate_weekly_posts_uses_business_profile_when_no_campaign_is_selected() -> None:
+    sheets_service = FakeSheetsService(campaigns=[])
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_weekly_posts(
+        WeeklySocialQueueGenerateRequest(
+            business_profile={
+                "business_name": "Acme Roofing",
+                "industry": "Roofing",
+                "service_area_cities": ["Austin", "Round Rock"],
+                "services_offered": ["Roof repair", "Storm damage inspections"],
+                "website_url": "https://acme-roofing.example",
+                "brand_tone": "Direct and reassuring",
+                "target_customer": "homeowners with roof leaks",
+                "primary_cta": "Schedule a roof inspection",
+                "platforms_used": ["Facebook", "Instagram", "Google Business"],
+            }
+        )
+    )
+
+    assert result.existing is False
+    assert len(result.queue_items) == 6
+    assert all(item.campaign_id == "BUSINESS-PROFILE" for item in result.queue_items)
+    assert all(item.business == "Acme Roofing" for item in result.queue_items)
+    assert all(item.cta == "Schedule a roof inspection" for item in result.queue_items)
+    assert all(item.landing_page_url == "https://acme-roofing.example" for item in result.queue_items)
+    assert all("acme-roofing.example" in item.draft_text for item in result.queue_items)
+    assert all("Generated from Business Profile" in item.notes for item in result.queue_items)
+    assert all("Services Offered: Roof repair, Storm damage inspections" in item.notes for item in result.queue_items)
+
+
 def test_generate_weekly_posts_avoids_images_already_used_in_same_week() -> None:
     existing_item = _queue_item(
         "WSQ-existing-google-1",
@@ -484,6 +517,36 @@ def test_generate_manual_post_creates_one_default_google_business_item() -> None
             "avoid_phrases": STATIC_WEEKLY_AVOID_PHRASES,
         }
     ]
+
+
+def test_generate_manual_post_uses_business_profile_when_no_campaign_is_selected() -> None:
+    sheets_service = FakeSheetsService(campaigns=[])
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_manual_post(
+        ManualSocialPostGenerateRequest(
+            post_type="Offer / CTA",
+            business_profile={
+                "business_name": "Northside Landscaping",
+                "industry": "Landscaping",
+                "service_area_cities": ["Evanston"],
+                "services_offered": ["Lawn care", "Mulch installation"],
+                "website_url": "https://northside-landscaping.example",
+                "target_customer": "busy homeowners",
+                "primary_cta": "Request a lawn care quote",
+                "platforms_used": ["Facebook", "Instagram", "Google Business"],
+            },
+        )
+    )
+
+    queue_item = result.queue_items[0]
+    assert queue_item.campaign_id == "BUSINESS-PROFILE"
+    assert queue_item.business == "Northside Landscaping"
+    assert queue_item.cta == "Request a lawn care quote"
+    assert queue_item.landing_page_url == "https://northside-landscaping.example"
+    assert queue_item.draft_text == "Offer / CTA Google Business caption. https://northside-landscaping.example"
 
 
 def test_generate_manual_post_passes_selected_post_type_into_generation() -> None:

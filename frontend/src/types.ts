@@ -130,6 +130,20 @@ export type CampaignContentRunDueResponse = {
   failed_items: CampaignContentQueueItem[];
 };
 
+export type BusinessProfile = {
+  business_name: string;
+  industry: string;
+  service_area_cities: string[];
+  services_offered: string[];
+  website_url: string;
+  phone_number: string;
+  email: string;
+  brand_tone: string;
+  target_customer: string;
+  primary_cta: string;
+  platforms_used: Array<'Facebook' | 'Instagram' | 'Google Business'>;
+};
+
 export type WeeklySocialQueueGenerateRequest = {
   campaign_id?: string | null;
   platforms?: CampaignContentQueueItem['platform'][] | null;
@@ -140,12 +154,14 @@ export type WeeklySocialQueueGenerateRequest = {
   campaign_theme?: string | null;
   separate_meta_platforms?: boolean;
   include_facebook_groups?: boolean;
+  business_profile?: BusinessProfile | null;
 };
 
 export type ManualSocialPostGenerateRequest = {
   campaign_id?: string | null;
   platform?: CampaignContentQueueItem['platform'] | null;
   post_type?: string;
+  business_profile?: BusinessProfile | null;
 };
 
 export type SocialQueueGenerateResponse = {

@@ -32,6 +32,7 @@ import {
   updatePostScheduledAt,
 } from './api';
 import type {
+  BusinessProfile,
   Campaign,
   CampaignContentQueueItem,
   CampaignDraftSet,
@@ -44,6 +45,7 @@ type BusyAction = string | null;
 type PostAssistantCopiedAction = 'caption' | null;
 type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups' | 'Craigslist' | 'Nextdoor';
 type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business';
+type AppSection = 'calendar' | 'business-profile' | 'photo-library' | 'jobs-queues';
 
 type WeeklyScheduleSettings = {
   weekStartDate: string;
@@ -207,6 +209,22 @@ const weeklyScheduleContentTypeOptions = [
 ];
 
 const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
+const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
+const businessProfilePlatforms: BusinessProfile['platforms_used'] = ['Facebook', 'Instagram', 'Google Business'];
+
+const defaultBusinessProfile: BusinessProfile = {
+  business_name: 'Marom Painting',
+  industry: 'Residential painting',
+  service_area_cities: ['Oak Park', 'River Forest', 'Forest Park'],
+  services_offered: ['Interior painting', 'Exterior painting', 'Cabinet painting', 'Drywall repair'],
+  website_url: 'https://marompainting.org',
+  phone_number: '',
+  email: '',
+  brand_tone: 'Professional, helpful, local, and trustworthy',
+  target_customer: 'Homeowners and property managers who want clean, reliable painting work',
+  primary_cta: 'Request a free estimate',
+  platforms_used: [...businessProfilePlatforms],
+};
 
 const postTypeOptions = [
   'General',
@@ -319,6 +337,68 @@ function defaultWeeklyScheduleSettings(): WeeklyScheduleSettings {
     contentTypes: [...weeklyScheduleContentTypeOptions],
     campaignTheme: defaultWeeklyCampaignTheme,
   };
+}
+
+function parseProfileList(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatProfileList(values: string[]) {
+  return values.join('\n');
+}
+
+function normalizeBusinessProfile(profile: Partial<BusinessProfile> | null | undefined): BusinessProfile {
+  const platforms = (profile?.platforms_used ?? defaultBusinessProfile.platforms_used).filter((platform) =>
+    businessProfilePlatforms.includes(platform),
+  );
+
+  return {
+    business_name: profile?.business_name?.trim() || defaultBusinessProfile.business_name,
+    industry: profile?.industry?.trim() || defaultBusinessProfile.industry,
+    service_area_cities:
+      profile?.service_area_cities?.map((city) => city.trim()).filter(Boolean) ??
+      defaultBusinessProfile.service_area_cities,
+    services_offered:
+      profile?.services_offered?.map((service) => service.trim()).filter(Boolean) ??
+      defaultBusinessProfile.services_offered,
+    website_url: profile?.website_url?.trim() || defaultBusinessProfile.website_url,
+    phone_number: profile?.phone_number?.trim() ?? defaultBusinessProfile.phone_number,
+    email: profile?.email?.trim() ?? defaultBusinessProfile.email,
+    brand_tone: profile?.brand_tone?.trim() || defaultBusinessProfile.brand_tone,
+    target_customer: profile?.target_customer?.trim() || defaultBusinessProfile.target_customer,
+    primary_cta: profile?.primary_cta?.trim() || defaultBusinessProfile.primary_cta,
+    platforms_used: platforms.length > 0 ? platforms : [...defaultBusinessProfile.platforms_used],
+  };
+}
+
+function loadStoredBusinessProfile() {
+  if (typeof window === 'undefined') return defaultBusinessProfile;
+
+  try {
+    const storedProfile = window.localStorage.getItem(businessProfileStorageKey);
+    if (!storedProfile) return defaultBusinessProfile;
+    return normalizeBusinessProfile(JSON.parse(storedProfile) as Partial<BusinessProfile>);
+  } catch {
+    return defaultBusinessProfile;
+  }
+}
+
+function storeBusinessProfile(profile: BusinessProfile) {
+  // TODO: Replace localStorage with GET/PUT /business-profile when backend settings persistence is added.
+  window.localStorage.setItem(businessProfileStorageKey, JSON.stringify(profile));
+}
+
+function weeklyPlatformsFromBusinessProfile(profile: BusinessProfile): WeeklySchedulePlatform[] {
+  return profile.platforms_used.filter((platform): platform is WeeklySchedulePlatform =>
+    weeklySchedulePlatformOptions.includes(platform),
+  );
+}
+
+function weeklyCampaignThemeFromBusinessProfile(profile: BusinessProfile) {
+  return profile.business_name ? `${profile.business_name} Weekly Local Business Content` : defaultWeeklyCampaignTheme;
 }
 
 function formatCampaignCopyPackage(item: CampaignContentQueueItem) {
@@ -839,6 +919,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [activeSection, setActiveSection] = useState<AppSection>('calendar');
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
+  const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null);
   const [scheduleInputs, setScheduleInputs] = useState<Record<string, string>>({});
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
@@ -932,6 +1015,15 @@ function App() {
     void loadCampaigns();
     void loadWeeklyQueue();
   }, [loadCampaigns, loadWeeklyQueue]);
+
+  useEffect(() => {
+    if (activeSection !== 'jobs-queues') return;
+
+    void loadJobs();
+    void loadQueue();
+    void loadCampaigns();
+    void loadCampaignQueue();
+  }, [activeSection, loadCampaignQueue, loadCampaigns, loadJobs, loadQueue]);
 
   useEffect(() => {
     if (!postAssistantItem) return undefined;
@@ -1115,6 +1207,52 @@ function App() {
       .sort((a, b) => b.latestCreatedAt.localeCompare(a.latestCreatedAt));
   }, [campaignQueue]);
 
+  function refreshActiveSection() {
+    if (activeSection === 'jobs-queues') {
+      return Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue()]);
+    }
+    if (activeSection === 'calendar') {
+      return Promise.all([loadCampaigns(), loadWeeklyQueue()]);
+    }
+    return Promise.resolve();
+  }
+
+  function openWeeklyScheduleModal() {
+    const profilePlatforms = weeklyPlatformsFromBusinessProfile(businessProfile);
+    setWeeklyScheduleSettings((current) => ({
+      ...current,
+      platforms: profilePlatforms.length > 0 ? profilePlatforms : current.platforms,
+      campaignTheme:
+        current.campaignTheme === defaultWeeklyCampaignTheme || !current.campaignTheme.trim()
+          ? weeklyCampaignThemeFromBusinessProfile(businessProfile)
+          : current.campaignTheme,
+    }));
+    setShowWeeklyScheduleModal(true);
+  }
+
+  function handleSaveBusinessProfile() {
+    const nextProfile = normalizeBusinessProfile(businessProfileDraft);
+    setBusinessProfile(nextProfile);
+    setBusinessProfileDraft(nextProfile);
+    storeBusinessProfile(nextProfile);
+    setWarning('Business profile saved. Future generated posts will use this profile.');
+    setError(null);
+  }
+
+  function handleCancelBusinessProfileEdits() {
+    setBusinessProfileDraft(businessProfile);
+    setError(null);
+  }
+
+  function handleResetBusinessProfile() {
+    const nextProfile = normalizeBusinessProfile(defaultBusinessProfile);
+    setBusinessProfile(nextProfile);
+    setBusinessProfileDraft(nextProfile);
+    storeBusinessProfile(nextProfile);
+    setWarning('Business profile reset to the seeded Marom/Gomez Painting defaults.');
+    setError(null);
+  }
+
   async function handlePreview(job: CompletedJob) {
     if (!job.job_id) return;
     const actionKey = `preview:${job.job_id}`;
@@ -1222,6 +1360,7 @@ function App() {
         content_types: settings.contentTypes,
         campaign_theme: campaignTheme,
         separate_meta_platforms: true,
+        business_profile: businessProfile,
       });
       setCalendarWeekStartDate(settings.weekStartDate);
       await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue()]);
@@ -1249,6 +1388,7 @@ function App() {
         campaign_id: selectedCampaignId || null,
         platform: manualPlatform,
         post_type: manualPostType,
+        business_profile: businessProfile,
       });
       await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
       setWarning(`Generated ${result.queue_items.length} additional post.`);
@@ -1413,9 +1553,10 @@ function App() {
     try {
       // TODO: Replace this additive generation call with a slot-aware regenerate endpoint that updates one PlatformPost.
       const result = await generateManualSocialPost({
-        campaign_id: post.item.campaign_id,
+        campaign_id: post.item.campaign_id === 'BUSINESS-PROFILE' ? null : post.item.campaign_id,
         platform: post.sourcePlatform,
         post_type: getContentItemType(post.item),
+        business_profile: businessProfile,
       });
       await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
       setWarning(`Generated ${result.queue_items.length} new draft candidate. Review it before posting.`);
@@ -1962,16 +2103,38 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <h1>Gomez Ops</h1>
-        <button
-          aria-label="Refresh"
-          className="icon-button topbar-refresh-button"
-          title="Refresh"
-          type="button"
-          onClick={() => void Promise.all([loadCampaigns(), loadWeeklyQueue()])}
-        >
-          <Icon name="restore" />
-        </button>
+        <div>
+          <h1>Gomez Ops</h1>
+          <p>{businessProfile.business_name} content operations</p>
+        </div>
+        <div className="topbar-actions">
+          <nav className="app-nav" aria-label="Primary">
+            {[
+              ['calendar', 'Calendar'],
+              ['business-profile', 'Business Profile'],
+              ['photo-library', 'Photo Library'],
+              ['jobs-queues', 'Jobs + Queues'],
+            ].map(([sectionKey, label]) => (
+              <button
+                className={activeSection === sectionKey ? 'active' : ''}
+                key={sectionKey}
+                type="button"
+                onClick={() => setActiveSection(sectionKey as AppSection)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          <button
+            aria-label="Refresh"
+            className="icon-button topbar-refresh-button"
+            title="Refresh"
+            type="button"
+            onClick={() => void refreshActiveSection()}
+          >
+            <Icon name="restore" />
+          </button>
+        </div>
       </header>
 
       {error ? (
@@ -1988,6 +2151,7 @@ function App() {
         </section>
       ) : null}
 
+      {activeSection === 'calendar' ? (
       <section className="panel weekly-panel">
         <div className="panel-heading weekly-heading">
           <div>
@@ -1999,7 +2163,7 @@ function App() {
             <button
               className="secondary-button"
               disabled={busyAction === 'generate-weekly-posts'}
-              onClick={() => setShowWeeklyScheduleModal(true)}
+              onClick={openWeeklyScheduleModal}
             >
               Generate Weekly Posts
             </button>
@@ -2241,8 +2405,22 @@ function App() {
           ) : null}
         </div>
       </section>
+      ) : null}
 
-      {false ? (
+      {activeSection === 'business-profile' ? (
+        <BusinessProfileSection
+          profile={businessProfile}
+          draft={businessProfileDraft}
+          onCancel={handleCancelBusinessProfileEdits}
+          onChange={setBusinessProfileDraft}
+          onReset={handleResetBusinessProfile}
+          onSave={handleSaveBusinessProfile}
+        />
+      ) : null}
+
+      {activeSection === 'photo-library' ? <PhotoLibraryPlaceholder /> : null}
+
+      {activeSection === 'jobs-queues' ? (
       <>
       <section className="panel">
         <div className="panel-heading">
@@ -2813,6 +2991,178 @@ function App() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function BusinessProfileSection({
+  profile,
+  draft,
+  onCancel,
+  onChange,
+  onReset,
+  onSave,
+}: {
+  profile: BusinessProfile;
+  draft: BusinessProfile;
+  onCancel: () => void;
+  onChange: (profile: BusinessProfile) => void;
+  onReset: () => void;
+  onSave: () => void;
+}) {
+  const updateField = <Key extends keyof BusinessProfile>(field: Key, value: BusinessProfile[Key]) => {
+    onChange({ ...draft, [field]: value });
+  };
+  const togglePlatform = (platform: BusinessProfile['platforms_used'][number]) => {
+    const selected = draft.platforms_used.includes(platform);
+    updateField(
+      'platforms_used',
+      selected ? draft.platforms_used.filter((item) => item !== platform) : [...draft.platforms_used, platform],
+    );
+  };
+
+  return (
+    <section className="panel business-profile-panel">
+      <div className="panel-heading weekly-heading">
+        <div>
+          <h2>Business Profile</h2>
+          <p>Saved business details used by weekly and single-post generation.</p>
+        </div>
+        <div className="panel-heading-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="danger-button" type="button" onClick={onReset}>
+            Reset
+          </button>
+          <button className="secondary-button" type="button" onClick={onSave}>
+            Save Profile
+          </button>
+        </div>
+      </div>
+
+      <div className="business-profile-layout">
+        <form
+          className="business-profile-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave();
+          }}
+        >
+          <label className="form-field">
+            <span>Business name</span>
+            <input
+              value={draft.business_name}
+              onChange={(event) => updateField('business_name', event.target.value)}
+            />
+          </label>
+          <label className="form-field">
+            <span>Industry / category</span>
+            <input value={draft.industry} onChange={(event) => updateField('industry', event.target.value)} />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Service area cities</span>
+            <textarea
+              value={formatProfileList(draft.service_area_cities)}
+              onChange={(event) => updateField('service_area_cities', parseProfileList(event.target.value))}
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Services offered</span>
+            <textarea
+              value={formatProfileList(draft.services_offered)}
+              onChange={(event) => updateField('services_offered', parseProfileList(event.target.value))}
+            />
+          </label>
+          <label className="form-field">
+            <span>Website URL</span>
+            <input value={draft.website_url} onChange={(event) => updateField('website_url', event.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Phone number</span>
+            <input value={draft.phone_number} onChange={(event) => updateField('phone_number', event.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Email</span>
+            <input value={draft.email} onChange={(event) => updateField('email', event.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Primary CTA</span>
+            <input value={draft.primary_cta} onChange={(event) => updateField('primary_cta', event.target.value)} />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Brand tone</span>
+            <textarea value={draft.brand_tone} onChange={(event) => updateField('brand_tone', event.target.value)} />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Target customer</span>
+            <textarea
+              value={draft.target_customer}
+              onChange={(event) => updateField('target_customer', event.target.value)}
+            />
+          </label>
+          <fieldset className="option-group">
+            <legend>Platforms used</legend>
+            <div className="checkbox-grid">
+              {businessProfilePlatforms.map((platform) => (
+                <label className="checkbox-card" key={platform}>
+                  <input
+                    checked={draft.platforms_used.includes(platform)}
+                    type="checkbox"
+                    onChange={() => togglePlatform(platform)}
+                  />
+                  <span>{platform}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </form>
+
+        <aside className="business-profile-summary" aria-label="Current saved profile">
+          <span>Current Saved Profile</span>
+          <h3>{profile.business_name}</h3>
+          <p>{profile.industry}</p>
+          <div className="business-profile-pill-list">
+            <strong>Service Area</strong>
+            {profile.service_area_cities.map((city) => (
+              <span key={city}>{city}</span>
+            ))}
+          </div>
+          <div className="business-profile-pill-list">
+            <strong>Services</strong>
+            {profile.services_offered.map((service) => (
+              <span key={service}>{service}</span>
+            ))}
+          </div>
+          <div className="business-profile-summary-lines">
+            <span>CTA: {profile.primary_cta}</span>
+            <span>Website: {profile.website_url}</span>
+            {profile.phone_number ? <span>Phone: {profile.phone_number}</span> : null}
+            {profile.email ? <span>Email: {profile.email}</span> : null}
+            <span>Tone: {profile.brand_tone}</span>
+            <span>Target: {profile.target_customer}</span>
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function PhotoLibraryPlaceholder() {
+  return (
+    <section className="panel photo-library-panel">
+      <div className="panel-heading weekly-heading">
+        <div>
+          <h2>Photo Library</h2>
+          <p>Campaign image management will live here. Existing generated posts still use the current backend rotation.</p>
+        </div>
+      </div>
+      <div className="photo-library-placeholder">
+        <div>
+          <strong>Photo Library placeholder</strong>
+          <span>Upcoming tools: upload images, tag rooms/services, mark before/after pairs, and exclude photos from rotation.</span>
+        </div>
+      </div>
+    </section>
   );
 }
 
