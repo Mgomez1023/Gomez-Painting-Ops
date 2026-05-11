@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies import get_sheets_service, get_social_queue_service
 from app.models.campaign_content import (
+    CampaignContentScheduleRequest,
     CampaignContentQueueItem,
     ManualSocialPostGenerateRequest,
     PostDraftTextUpdateRequest,
@@ -36,10 +37,11 @@ async def list_posts(
 
 @router.get("/weekly", response_model=list[CampaignContentQueueItem])
 async def list_weekly_posts(
+    week_start_date: str | None = None,
     social_queue_service: SocialQueueService = Depends(get_social_queue_service),
 ) -> list[CampaignContentQueueItem]:
     try:
-        return social_queue_service.list_current_week_posts()
+        return social_queue_service.list_week_posts(week_start_date)
     except SheetsConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -124,6 +126,52 @@ async def update_post_draft_text(
         ) from exc
 
     return _serialize_updated_post(content_id=content_id, updated_post=updated_post)
+
+
+@router.patch("/{content_id}/schedule", response_model=CampaignContentQueueItem)
+async def update_post_schedule(
+    content_id: str,
+    request: CampaignContentScheduleRequest,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    try:
+        updated_post = sheets_service.update_post_scheduled_at(
+            content_id=content_id,
+            scheduled_at=request.scheduled_at,
+        )
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return _serialize_updated_post(content_id=content_id, updated_post=updated_post)
+
+
+@router.delete("/{content_id}", response_model=CampaignContentQueueItem)
+async def delete_post(
+    content_id: str,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    try:
+        deleted_post = sheets_service.delete_post(content_id)
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return _serialize_updated_post(content_id=content_id, updated_post=deleted_post)
 
 
 @router.post("/{content_id}/posted", response_model=CampaignContentQueueItem)

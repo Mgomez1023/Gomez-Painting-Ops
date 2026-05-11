@@ -86,10 +86,16 @@ class FakeCampaignImageService:
         self.selection_count = 0
 
     def select_next_image(self) -> CampaignImageMetadata:
+        return self.select_next_unique_image(set())
+
+    def select_next_unique_image(self, excluded_image_filenames: set[str]) -> CampaignImageMetadata:
         self.selection_count += 1
+        image_index = self.selection_count
+        while f"image-{image_index}.jpg" in excluded_image_filenames:
+            image_index += 1
         return CampaignImageMetadata(
-            image_filename=f"image-{self.selection_count}.jpg",
-            image_path=f"/media/campaigns/image-{self.selection_count}.jpg",
+            image_filename=f"image-{image_index}.jpg",
+            image_path=f"/media/campaigns/image-{image_index}.jpg",
         )
 
 
@@ -173,7 +179,7 @@ def test_generate_weekly_posts_creates_google_business_and_combined_meta_posts()
     assert result.existing is False
     assert len(result.queue_items) == 6
     assert campaign_agent.generate_count == 3
-    assert image_service.selection_count == 3
+    assert image_service.selection_count == 6
     assert {item.platform for item in result.queue_items} == {
         "Google Business",
         "Meta Dual",
@@ -282,7 +288,7 @@ def test_generate_weekly_posts_refills_skipped_or_rejected_slots_but_keeps_poste
         ("Meta Dual", 1),
     ]
     assert campaign_agent.generate_count == 1
-    assert image_service.selection_count == 1
+    assert image_service.selection_count == 2
 
 
 def test_manual_current_week_post_does_not_count_as_weekly_slot() -> None:
@@ -319,6 +325,85 @@ def test_generate_weekly_posts_merges_facebook_and_instagram_into_meta_dual() ->
     assert result.queue_items[0].platform == "Meta Dual"
     assert result.queue_items[0].post_type == "Seasonal Reminder"
     assert "Seasonal Reminder Facebook caption" in result.queue_items[0].draft_text
+
+
+def test_generate_weekly_schedule_uses_selected_week_days_platforms_and_content_types() -> None:
+    sheets_service = FakeSheetsService()
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_weekly_posts(
+        WeeklySocialQueueGenerateRequest(
+            week_start_date="2026-05-11",
+            content_days=5,
+            posts_per_platform=5,
+            platforms=["Facebook", "Instagram", "Google Business"],
+            content_types=[
+                "Seasonal Reminder",
+                "Problem/Solution",
+                "Trust Local Proof",
+                "Before/After",
+                "Service Education",
+            ],
+            campaign_theme="Weekly Local Business Content",
+            separate_meta_platforms=True,
+        )
+    )
+
+    assert result.existing is False
+    assert len(result.queue_items) == 15
+    assert campaign_agent.generate_count == 5
+    assert image_service.selection_count == 15
+    assert {item.platform for item in result.queue_items} == {"Facebook", "Instagram", "Google Business"}
+    slot_dates = {
+        SocialQueueService._item_slot_index(item): item.scheduled_at[:10]
+        for item in result.queue_items
+        if item.platform == "Facebook" and item.scheduled_at
+    }
+    assert slot_dates == {
+        1: "2026-05-11",
+        2: "2026-05-12",
+        3: "2026-05-13",
+        4: "2026-05-14",
+        5: "2026-05-15",
+    }
+    assert [call["post_type"] for call in campaign_agent.generate_for_post_type_calls] == [
+        "Seasonal Reminder",
+        "Problem/Solution",
+        "Trust Local Proof",
+        "Before/After",
+        "Service Education",
+    ]
+    assert all("Week: 2026-W20" in item.notes for item in result.queue_items)
+    assert all("Week Start: 2026-05-11" in item.notes for item in result.queue_items)
+    assert all("Campaign Theme: Weekly Local Business Content" in item.notes for item in result.queue_items)
+    assert len({item.image_filename for item in result.queue_items}) == len(result.queue_items)
+    instagram_item = next(item for item in result.queue_items if item.platform == "Instagram")
+    assert "Instagram caption" in instagram_item.draft_text
+
+
+def test_generate_weekly_posts_avoids_images_already_used_in_same_week() -> None:
+    existing_item = _queue_item(
+        "WSQ-existing-google-1",
+        platform="Google Business",
+        slot=1,
+        post_type="Seasonal Reminder",
+    ).model_copy(update={"image_filename": "image-1.jpg", "image_path": "/media/campaigns/image-1.jpg"})
+    sheets_service = FakeSheetsService(queue_items=[existing_item])
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_weekly_posts(WeeklySocialQueueGenerateRequest(posts_per_platform=1))
+
+    generated_images = {
+        item.image_filename
+        for item in result.queue_items
+        if item.content_id != existing_item.content_id
+    }
+    assert "image-1.jpg" not in generated_images
+    assert len(generated_images) == len(result.queue_items) - 1
 
 
 def test_generate_weekly_posts_passes_static_and_recent_openings_to_avoid() -> None:
@@ -364,6 +449,14 @@ def test_generate_weekly_posts_uses_expected_post_type_rotation() -> None:
         "Neighborhood Focus",
         "Preparation Tip",
     ]
+
+
+def test_content_day_offsets_match_weekly_schedule_rules() -> None:
+    assert SocialQueueService._content_day_offsets(5) == [0, 1, 2, 3, 4]
+    assert SocialQueueService._content_day_offsets(7) == [0, 1, 2, 3, 4, 5, 6]
+    assert SocialQueueService._content_day_offsets(3) == [0, 2, 4]
+    assert SocialQueueService._content_day_offsets(2) == [1, 3]
+    assert SocialQueueService._content_day_offsets(1) == [0]
 
 
 def test_generate_manual_post_creates_one_default_google_business_item() -> None:

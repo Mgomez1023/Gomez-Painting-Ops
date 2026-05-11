@@ -52,6 +52,28 @@ def test_select_next_image_cycles_to_first_after_last_image(tmp_path: Path) -> N
     assert '"last_index": 0' in (tmp_path / ".rotation_state.json").read_text(encoding="utf-8")
 
 
+def test_select_next_unique_image_skips_excluded_images(tmp_path: Path) -> None:
+    (tmp_path / "a-room.jpg").write_text("image", encoding="utf-8")
+    (tmp_path / "b-room.webp").write_text("image", encoding="utf-8")
+    service = CampaignImageService(media_dir=tmp_path, state_file=tmp_path / ".rotation_state.json")
+
+    selected = service.select_next_unique_image({"a-room.jpg"})
+
+    assert selected is not None
+    assert selected.image_filename == "b-room.webp"
+    assert '"last_index": 1' in (tmp_path / ".rotation_state.json").read_text(encoding="utf-8")
+
+
+def test_select_next_unique_image_returns_none_when_all_images_are_excluded(tmp_path: Path) -> None:
+    (tmp_path / "a-room.jpg").write_text("image", encoding="utf-8")
+    service = CampaignImageService(media_dir=tmp_path, state_file=tmp_path / ".rotation_state.json")
+
+    selected = service.select_next_unique_image({"a-room.jpg"})
+
+    assert selected is None
+    assert not (tmp_path / ".rotation_state.json").exists()
+
+
 def test_list_campaign_images_ignores_unsupported_files(tmp_path: Path) -> None:
     (tmp_path / "a-room.gif").write_text("image", encoding="utf-8")
     (tmp_path / "b-room.jpeg").write_text("image", encoding="utf-8")

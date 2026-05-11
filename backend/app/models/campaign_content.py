@@ -103,6 +103,11 @@ class WeeklySocialQueueGenerateRequest(BaseModel):
     campaign_id: str | None = None
     platforms: list[CampaignPlatform] | None = None
     posts_per_platform: int = Field(default=3, ge=1, le=7)
+    content_days: int | None = Field(default=None, ge=1, le=7)
+    week_start_date: str | None = None
+    content_types: list[str] | None = None
+    campaign_theme: str | None = None
+    separate_meta_platforms: bool = False
     include_facebook_groups: bool = False
 
 

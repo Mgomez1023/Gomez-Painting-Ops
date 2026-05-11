@@ -45,19 +45,29 @@ class CampaignImageService:
         )
 
     def select_next_image(self) -> CampaignImageMetadata | None:
+        return self.select_next_unique_image(set())
+
+    def select_next_unique_image(self, excluded_image_filenames: set[str]) -> CampaignImageMetadata | None:
         images = self.list_campaign_images()
         if not images:
             return None
 
+        excluded_names = {filename.strip().lower() for filename in excluded_image_filenames if filename.strip()}
         last_index = self._read_last_index()
-        next_index = 0 if last_index is None else (last_index + 1) % len(images)
-        selected_image = images[next_index]
-        self._write_last_index(next_index)
+        for offset in range(len(images)):
+            next_index = (0 if last_index is None else last_index + 1) + offset
+            next_index %= len(images)
+            selected_image = images[next_index]
+            if selected_image.name.lower() in excluded_names:
+                continue
 
-        return CampaignImageMetadata(
-            image_filename=selected_image.name,
-            image_path=f"{self.public_path_prefix}/{selected_image.name}",
-        )
+            self._write_last_index(next_index)
+            return CampaignImageMetadata(
+                image_filename=selected_image.name,
+                image_path=f"{self.public_path_prefix}/{selected_image.name}",
+            )
+
+        return None
 
     def _read_last_index(self) -> int | None:
         if not self.state_file.exists():

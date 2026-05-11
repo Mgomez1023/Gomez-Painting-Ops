@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from app.agents.campaign_agent import CampaignAgent
 from app.models.campaign import Campaign
@@ -13,7 +13,7 @@ from app.models.campaign_content import (
     WeeklySocialQueueGenerateRequest,
 )
 from app.services.campaign_image_service import CampaignImageService, CampaignImageMetadata
-from app.services.sheets_service import SheetsService
+from app.services.sheets_service import SheetsDataError, SheetsService
 
 
 DEFAULT_WEEKLY_PLATFORMS: list[CampaignPlatform] = [
@@ -63,7 +63,10 @@ class SocialQueueService:
         self.campaign_image_service = campaign_image_service
 
     def list_current_week_posts(self) -> list[CampaignContentQueueItem]:
-        week_key = self._current_week_key()
+        return self.list_week_posts()
+
+    def list_week_posts(self, week_start_date: str | None = None) -> list[CampaignContentQueueItem]:
+        week_key = self._week_key_for_start_date(week_start_date)
         return [
             item
             for item in self.sheets_service.list_posts()
@@ -80,18 +83,23 @@ class SocialQueueService:
         campaign = self._campaign_for_posts(selected_campaign)
 
         platforms = self._weekly_platforms(request)
+        content_days = request.content_days or request.posts_per_platform
+        week_start = self._week_start_date(request.week_start_date)
+        week_start_date = week_start.isoformat()
+        week_key = self._week_key_for_date(week_start)
         expected_plan = self._weekly_post_plan(
             platforms=platforms,
-            posts_per_platform=request.posts_per_platform,
+            content_days=content_days,
+            week_start_date=week_start_date,
+            content_types=request.content_types,
         )
-        week_key = self._current_week_key()
         existing_items = [
             item
             for item in self.sheets_service.get_posts_by_campaign_id(campaign.campaign_id)
             if self._item_week_key(item) == week_key
         ]
         taken_slot_keys = {
-            (slot_index, self._normalize_post_platform(item.platform))
+            (slot_index, self._post_slot_platform_key(item.platform, separate_meta_platforms=request.separate_meta_platforms))
             for item in existing_items
             if (slot_index := self._item_slot_index(item)) is not None and self._is_weekly_slot_taken(item)
         }
@@ -107,6 +115,7 @@ class SocialQueueService:
         created_at = self._utc_timestamp()
         content_id_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         queue_items: list[CampaignContentQueueItem] = []
+        used_weekly_image_filenames = self._used_weekly_image_filenames(existing_items)
 
         for slots in self._group_weekly_slots_by_index(missing_slots):
             first_slot = slots[0]
@@ -117,8 +126,10 @@ class SocialQueueService:
                 avoid_phrases=avoid_phrases,
             )
             avoid_phrases = self._extend_avoid_phrases_from_draft_set(avoid_phrases, draft_set)
-            image_metadata = self.campaign_image_service.select_next_image()
             for slot in slots:
+                image_metadata = self.campaign_image_service.select_next_unique_image(used_weekly_image_filenames)
+                if image_metadata is not None:
+                    used_weekly_image_filenames.add(image_metadata.image_filename.lower())
                 queue_items.append(
                     self._build_queue_item(
                         campaign=campaign,
@@ -131,6 +142,8 @@ class SocialQueueService:
                         created_at=created_at,
                         scheduled_at=slot.scheduled_at,
                         image_metadata=image_metadata,
+                        campaign_theme=request.campaign_theme,
+                        week_start_date=week_start_date,
                     )
                 )
 
@@ -186,12 +199,32 @@ class SocialQueueService:
         requested_platforms = request.platforms or DEFAULT_WEEKLY_PLATFORMS
         platforms: list[CampaignPlatform] = []
         for requested_platform in requested_platforms:
-            platform = SocialQueueService._normalize_post_platform(requested_platform)
-            if platform not in platforms:
-                platforms.append(platform)
+            if request.separate_meta_platforms:
+                normalized_platforms = SocialQueueService._platform_specific_posts(requested_platform)
+            else:
+                normalized_platforms = [SocialQueueService._normalize_post_platform(requested_platform)]
+            for platform in normalized_platforms:
+                if platform not in platforms:
+                    platforms.append(platform)
         if request.include_facebook_groups and "Facebook Groups" not in platforms:
             platforms = [*platforms, "Facebook Groups"]
         return platforms
+
+    @staticmethod
+    def _platform_specific_posts(platform: CampaignPlatform) -> list[CampaignPlatform]:
+        if platform == "Meta Dual":
+            return ["Facebook", "Instagram"]
+        if platform == "Facebook Page":
+            return ["Facebook"]
+        return [platform]
+
+    @staticmethod
+    def _post_slot_platform_key(platform: CampaignPlatform, separate_meta_platforms: bool) -> CampaignPlatform:
+        if separate_meta_platforms:
+            if platform == "Facebook Page":
+                return "Facebook"
+            return platform
+        return SocialQueueService._normalize_post_platform(platform)
 
     @staticmethod
     def _normalize_post_platform(platform: CampaignPlatform) -> CampaignPlatform:
@@ -200,25 +233,63 @@ class SocialQueueService:
         return platform
 
     @staticmethod
-    def _weekly_schedule_slots(posts_per_platform: int) -> list[str]:
-        now = datetime.now(timezone.utc)
-        monday = datetime.combine(
-            (now - timedelta(days=now.weekday())).date(),
-            time(hour=9, tzinfo=timezone.utc),
-        )
-        offsets = [0, 2, 4, 1, 3, 5, 6]
+    def _weekly_schedule_slots(content_days: int, week_start_date: str | None = None) -> list[str]:
+        week_start = SocialQueueService._week_start_date(week_start_date)
+        offsets = SocialQueueService._content_day_offsets(content_days)
         return [
-            (monday + timedelta(days=offsets[index])).isoformat(timespec="seconds").replace("+00:00", "Z")
-            for index in range(posts_per_platform)
+            datetime.combine(
+                week_start + timedelta(days=offset),
+                time(hour=15, tzinfo=timezone.utc),
+            )
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+            for offset in offsets
         ]
 
+    @staticmethod
+    def _content_day_offsets(content_days: int) -> list[int]:
+        return {
+            1: [0],
+            2: [1, 3],
+            3: [0, 2, 4],
+            4: [0, 1, 3, 4],
+            5: [0, 1, 2, 3, 4],
+            6: [0, 1, 2, 3, 4, 5],
+            7: [0, 1, 2, 3, 4, 5, 6],
+        }[content_days]
+
+    @staticmethod
+    def _week_start_date(value: str | None = None) -> date:
+        if value:
+            try:
+                return date.fromisoformat(value)
+            except ValueError as exc:
+                raise SheetsDataError(f"Invalid week_start_date: {value}") from exc
+
+        now = datetime.now(timezone.utc)
+        return (now - timedelta(days=now.weekday())).date()
+
+    @staticmethod
+    def _week_key_for_start_date(week_start_date: str | None = None) -> str:
+        return SocialQueueService._week_key_for_date(SocialQueueService._week_start_date(week_start_date))
+
+    @staticmethod
+    def _week_key_for_date(value: date) -> str:
+        year, week_number, _ = value.isocalendar()
+        return f"{year}-W{week_number:02d}"
+
+    @staticmethod
     def _weekly_post_plan(
-        self,
         platforms: list[CampaignPlatform],
-        posts_per_platform: int,
+        content_days: int,
+        week_start_date: str | None = None,
+        content_types: list[str] | None = None,
     ) -> list[WeeklyPostSlot]:
-        schedule_slots = self._weekly_schedule_slots(posts_per_platform)
-        post_types = self._weekly_post_types(posts_per_platform)
+        schedule_slots = SocialQueueService._weekly_schedule_slots(
+            content_days=content_days,
+            week_start_date=week_start_date,
+        )
+        post_types = SocialQueueService._weekly_post_types(content_days, content_types)
         plan: list[WeeklyPostSlot] = []
         for slot_index, scheduled_at in enumerate(schedule_slots, start=1):
             for platform in platforms:
@@ -233,11 +304,37 @@ class SocialQueueService:
         return plan
 
     @staticmethod
-    def _weekly_post_types(posts_per_platform: int) -> list[str]:
-        return [
-            WEEKLY_POST_TYPES[index % len(WEEKLY_POST_TYPES)]
-            for index in range(posts_per_platform)
+    def _weekly_post_types(content_days: int, content_types: list[str] | None = None) -> list[str]:
+        selected_types = [
+            post_type.strip()
+            for post_type in (content_types or WEEKLY_POST_TYPES)
+            if post_type.strip()
         ]
+        if not selected_types:
+            selected_types = WEEKLY_POST_TYPES
+        return [
+            selected_types[index % len(selected_types)]
+            for index in range(content_days)
+        ]
+
+    @staticmethod
+    def _used_weekly_image_filenames(items: list[CampaignContentQueueItem]) -> set[str]:
+        used_filenames: set[str] = set()
+        for item in items:
+            for image_value in (item.image_filename, item.image_path, item.image_url):
+                image_filename = SocialQueueService._image_filename(image_value)
+                if image_filename:
+                    used_filenames.add(image_filename.lower())
+        return used_filenames
+
+    @staticmethod
+    def _image_filename(value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized_value = value.strip().rstrip("/")
+        if not normalized_value:
+            return None
+        return normalized_value.rsplit("/", 1)[-1] or None
 
     @staticmethod
     def _group_weekly_slots_by_index(slots: list[WeeklyPostSlot]) -> list[list[WeeklyPostSlot]]:
@@ -313,15 +410,32 @@ class SocialQueueService:
         scheduled_at: str,
         image_metadata: CampaignImageMetadata | None,
         slot_index: int | None = None,
+        campaign_theme: str | None = None,
+        week_start_date: str | None = None,
     ) -> CampaignContentQueueItem:
+        scheduled_date = scheduled_at.split("T", 1)[0] if scheduled_at else ""
+        day_of_week = ""
+        if scheduled_date:
+            try:
+                day_of_week = date.fromisoformat(scheduled_date).strftime("%A")
+            except ValueError:
+                day_of_week = ""
+        slot_id = f"WCS-{week_key}-{slot_index}" if slot_index is not None else f"WCS-{week_key}-{content_id}"
+        theme = (campaign_theme or "Weekly Local Business Content").strip() or "Weekly Local Business Content"
         note_lines = [
             "Generated by Weekly Social Queue",
             f"Business: {campaign.campaign_name}",
+            f"Campaign Theme: {theme}",
             f"Week: {week_key}",
+            f"Week Start: {week_start_date or ''}",
+            f"Content Slot ID: {slot_id}",
+            f"Scheduled Date: {scheduled_date}",
+            f"Day of Week: {day_of_week}",
         ]
         if slot_index is not None:
             note_lines.append(f"Slot: {slot_index}")
         note_lines.append(f"Post Type: {post_type}")
+        note_lines.append(f"Topic: {theme} - {post_type}")
         notes = "\n".join(note_lines)
         return CampaignContentQueueItem(
             content_id=content_id,
@@ -388,8 +502,7 @@ class SocialQueueService:
 
     @staticmethod
     def _current_week_key() -> str:
-        year, week_number, _ = datetime.now(timezone.utc).isocalendar()
-        return f"{year}-W{week_number:02d}"
+        return SocialQueueService._week_key_for_start_date()
 
     @staticmethod
     def _utc_timestamp() -> str:

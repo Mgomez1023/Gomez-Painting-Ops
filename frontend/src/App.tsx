@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { JSX } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { JSX, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import {
   ApiError,
   approveCampaignContent,
   approveContent,
+  deletePost,
   generateAndSave,
   generateAndSaveCampaign,
   generateManualSocialPost,
@@ -28,6 +29,7 @@ import {
   runDuePublishing,
   scheduleCampaignContent,
   updatePostDraftText,
+  updatePostScheduledAt,
 } from './api';
 import type {
   Campaign,
@@ -39,8 +41,17 @@ import type {
 } from './types';
 
 type BusyAction = string | null;
-type DashboardTab = 'posts' | 'operations';
 type PostAssistantCopiedAction = 'caption' | null;
+type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups' | 'Craigslist' | 'Nextdoor';
+type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business';
+
+type WeeklyScheduleSettings = {
+  weekStartDate: string;
+  contentDays: number;
+  platforms: WeeklySchedulePlatform[];
+  contentTypes: string[];
+  campaignTheme: string;
+};
 
 type QueueGroup = {
   jobId: string;
@@ -54,6 +65,74 @@ type CampaignQueueGroup = {
   items: CampaignContentQueueItem[];
   latestCreatedAt: string;
   statusCounts: Record<string, number>;
+};
+
+type PlatformPost = {
+  id: string;
+  platform: CalendarPlatform;
+  sourcePlatform: CampaignContentQueueItem['platform'];
+  item: CampaignContentQueueItem;
+};
+
+type ContentSlot = {
+  id: string;
+  campaignId: string;
+  business: string;
+  weekKey: string;
+  title: string;
+  contentType: string;
+  dayIndex: number;
+  scheduledAt: string | null;
+  imageSource: string | null;
+  statusSummary: string;
+  sourceItems: CampaignContentQueueItem[];
+  platformPosts: PlatformPost[];
+};
+
+type WeeklyCampaignCalendar = {
+  campaignId: string;
+  business: string;
+  weekKey: string;
+  contentSlots: ContentSlot[];
+};
+
+type WeeklyCalendarDay = {
+  key: string;
+  label: string;
+  shortLabel: string;
+  contentSlots: ContentSlot[];
+};
+
+type CalendarDragCandidate = {
+  slotId: string;
+  originDayIndex: number;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  hasStarted: boolean;
+};
+
+type CalendarDragState = {
+  slotId: string;
+  originDayIndex: number;
+  currentX: number;
+  currentY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  overDayIndex: number | null;
+  overTrash: boolean;
+};
+
+type CalendarDropTarget = {
+  dayIndex: number | null;
+  overTrash: boolean;
+  dayElement: HTMLDetailsElement | null;
 };
 
 const draftFields: Array<[keyof ContentDraft, string]> = [
@@ -95,6 +174,40 @@ const manualPlatformOptions: CampaignContentQueueItem['platform'][] = [
   'Facebook Groups',
 ];
 
+const calendarDays = [
+  { key: 'monday', label: 'Monday', shortLabel: 'Mon' },
+  { key: 'tuesday', label: 'Tuesday', shortLabel: 'Tue' },
+  { key: 'wednesday', label: 'Wednesday', shortLabel: 'Wed' },
+  { key: 'thursday', label: 'Thursday', shortLabel: 'Thu' },
+  { key: 'friday', label: 'Friday', shortLabel: 'Fri' },
+  { key: 'saturday', label: 'Saturday', shortLabel: 'Sat' },
+  { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
+];
+
+const calendarPlatformOrder: Record<CalendarPlatform, number> = {
+  Facebook: 1,
+  Instagram: 2,
+  'Google Business': 3,
+  'Facebook Groups': 4,
+  Craigslist: 5,
+  Nextdoor: 6,
+};
+
+const coreCalendarPlatforms: CalendarPlatform[] = ['Facebook', 'Instagram', 'Google Business'];
+
+const weeklySchedulePlatformOptions: WeeklySchedulePlatform[] = ['Facebook', 'Instagram', 'Google Business'];
+
+const weeklyScheduleContentTypeOptions = [
+  'Seasonal Reminder',
+  'Problem/Solution',
+  'Trust Local Proof',
+  'Before/After',
+  'Service Education',
+  'Free Estimate CTA',
+];
+
+const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
+
 const postTypeOptions = [
   'General',
   'Offer / CTA',
@@ -109,7 +222,7 @@ const postTypeOptions = [
   'Review Request',
 ];
 
-type IconName = 'check' | 'copy' | 'download' | 'edit' | 'restore' | 'save' | 'skip' | 'x';
+type IconName = 'check' | 'copy' | 'download' | 'edit' | 'restore' | 'save' | 'skip' | 'trash' | 'x';
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, JSX.Element> = {
@@ -153,6 +266,15 @@ function Icon({ name }: { name: IconName }) {
         <path d="m15 9-6 6" />
       </>
     ),
+    trash: (
+      <>
+        <path d="M3 6h18" />
+        <path d="M8 6V4h8v2" />
+        <path d="M19 6 18 20H6L5 6" />
+        <path d="M10 11v5" />
+        <path d="M14 11v5" />
+      </>
+    ),
     x: (
       <>
         <path d="M18 6 6 18" />
@@ -174,6 +296,29 @@ function queueGroupDomId(jobId: string) {
 
 function campaignQueueGroupDomId(campaignId: string) {
   return `campaign-queue-group-${campaignId.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+}
+
+function formatDateInputValue(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function getDefaultWeekStartDateInput() {
+  const date = new Date();
+  const day = date.getDay();
+  const offsetToMonday = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + offsetToMonday);
+  return formatDateInputValue(date);
+}
+
+function defaultWeeklyScheduleSettings(): WeeklyScheduleSettings {
+  return {
+    weekStartDate: getDefaultWeekStartDateInput(),
+    contentDays: 5,
+    platforms: [...weeklySchedulePlatformOptions],
+    contentTypes: [...weeklyScheduleContentTypeOptions],
+    campaignTheme: defaultWeeklyCampaignTheme,
+  };
 }
 
 function formatCampaignCopyPackage(item: CampaignContentQueueItem) {
@@ -275,6 +420,10 @@ function formatPlatformLabel(platform: CampaignContentQueueItem['platform'] | Co
   return platform;
 }
 
+function statusClassName(status: string) {
+  return `status-pill status-${status.toLowerCase().replace(/\s+/g, '-')}`;
+}
+
 function getCampaignItemBusiness(item: CampaignContentQueueItem) {
   return item.business ?? readNoteValue(item.notes, 'Business') ?? item.campaign_id;
 }
@@ -283,6 +432,203 @@ function readNoteValue(notes: string, key: string) {
   const prefix = `${key.toLowerCase()}:`;
   const line = notes.split('\n').find((noteLine) => noteLine.trim().toLowerCase().startsWith(prefix));
   return line?.split(':', 2)[1]?.trim() || null;
+}
+
+function normalizeContentType(postType: string | null) {
+  if (!postType) return 'Content Idea';
+
+  const aliases: Record<string, string> = {
+    'Before and After': 'Before/After',
+    'Before/After': 'Before/After',
+    'FAQ / Education': 'Service Education',
+    'FAQ Education': 'Service Education',
+    'Offer / CTA': 'CTA',
+    'Offer CTA': 'CTA',
+    'Free Estimate CTA': 'CTA',
+    'Problem/Solution': 'Problem Solution',
+    'Trust / Local Proof': 'Trust Local Proof',
+  };
+
+  return aliases[postType] ?? postType;
+}
+
+function getContentItemType(item: CampaignContentQueueItem) {
+  return normalizeContentType(item.post_type ?? readNoteValue(item.notes, 'Post Type'));
+}
+
+function getContentItemWeekKey(item: CampaignContentQueueItem) {
+  return readNoteValue(item.notes, 'Week') ?? 'Unscheduled';
+}
+
+function getContentItemSlotIndex(item: CampaignContentQueueItem) {
+  const rawValue = readNoteValue(item.notes, 'Slot');
+  if (!rawValue) return null;
+  const slotIndex = Number.parseInt(rawValue, 10);
+  return Number.isFinite(slotIndex) && slotIndex > 0 ? slotIndex : null;
+}
+
+function getContentItemScheduledAt(item: CampaignContentQueueItem) {
+  if (item.scheduled_at) return item.scheduled_at;
+
+  const scheduledDate = readNoteValue(item.notes, 'Scheduled Date');
+  if (scheduledDate) return `${scheduledDate}T15:00:00Z`;
+
+  return item.created_at;
+}
+
+function getContentItemDayIndex(item: CampaignContentQueueItem) {
+  const dateValue = getContentItemScheduledAt(item);
+  const dateMatch = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!dateMatch) return 0;
+
+  const [, year, month, dayOfMonth] = dateMatch;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(dayOfMonth)));
+  if (Number.isNaN(date.getTime())) return 0;
+
+  const day = date.getUTCDay();
+  return day === 0 ? 6 : day - 1;
+}
+
+function getContentSlotTitle(items: CampaignContentQueueItem[]) {
+  const titledItem = items.find((item) => readNoteValue(item.notes, 'Title') ?? readNoteValue(item.notes, 'Topic'));
+  const explicitTitle = titledItem
+    ? readNoteValue(titledItem.notes, 'Title') ?? readNoteValue(titledItem.notes, 'Topic')
+    : null;
+  if (explicitTitle) return explicitTitle;
+
+  const firstItem = items[0];
+  if (!firstItem) return 'Content Slot';
+
+  const contentType = getContentItemType(firstItem);
+  const business = getCampaignItemBusiness(firstItem);
+  return business ? `${contentType}: ${business}` : contentType;
+}
+
+function getPlanningStatus(item: CampaignContentQueueItem) {
+  if (item.status === 'Posted' || item.status === 'Published' || item.published === 'Yes') return 'Posted';
+  if (item.status === 'Scheduled') return 'Scheduled';
+  if (item.status === 'Approved' || item.approved === 'Yes') return item.scheduled_at ? 'Scheduled' : 'Approved';
+  return item.status || 'Draft';
+}
+
+function getContentSlotStatusSummary(items: CampaignContentQueueItem[]) {
+  const counts = items.reduce(
+    (currentCounts, item) => {
+      const status = getPlanningStatus(item);
+      currentCounts[status] = (currentCounts[status] ?? 0) + 1;
+      return currentCounts;
+    },
+    {} as Record<string, number>,
+  );
+  const entries = Object.entries(counts);
+  if (entries.length === 0) return 'Draft';
+  if (entries.length === 1) return entries[0][0];
+  return entries.map(([status, count]) => `${count} ${status}`).join(' · ');
+}
+
+function getCalendarPlatformsForItem(item: CampaignContentQueueItem): CalendarPlatform[] {
+  if (item.platform === 'Meta Dual' || item.platform === 'Facebook Page') return ['Facebook', 'Instagram'];
+  if (item.platform === 'Facebook') return ['Facebook'];
+  if (item.platform === 'Instagram') return ['Instagram'];
+  if (item.platform === 'Google Business') return ['Google Business'];
+  if (item.platform === 'Facebook Groups') return ['Facebook Groups'];
+  if (item.platform === 'Craigslist') return ['Craigslist'];
+  return ['Nextdoor'];
+}
+
+function buildPlatformPosts(items: CampaignContentQueueItem[]): PlatformPost[] {
+  return items
+    .flatMap((item) =>
+      getCalendarPlatformsForItem(item).map((platform) => ({
+        id: `${item.content_id}:${platform}`,
+        platform,
+        sourcePlatform: item.platform,
+        item,
+      })),
+    )
+    .sort((a, b) => {
+      const platformCompare = calendarPlatformOrder[a.platform] - calendarPlatformOrder[b.platform];
+      if (platformCompare !== 0) return platformCompare;
+      return a.item.content_id.localeCompare(b.item.content_id);
+    });
+}
+
+function buildContentSlots(items: CampaignContentQueueItem[]): ContentSlot[] {
+  const groups = new Map<string, CampaignContentQueueItem[]>();
+
+  for (const item of items) {
+    const slotIndex = getContentItemSlotIndex(item);
+    // TODO: Replace this notes/content_id inference when the backend exposes first-class ContentSlot rows.
+    const groupKey =
+      slotIndex === null
+        ? `${item.campaign_id}:${getContentItemWeekKey(item)}:${item.content_id}`
+        : `${item.campaign_id}:${getContentItemWeekKey(item)}:${slotIndex}`;
+    const groupItems = groups.get(groupKey) ?? [];
+    groupItems.push(item);
+    groups.set(groupKey, groupItems);
+  }
+
+  return Array.from(groups.entries())
+    .map(([id, groupItems]) => {
+      const sortedItems = [...groupItems].sort((a, b) => {
+        const scheduledCompare = getContentItemScheduledAt(a).localeCompare(getContentItemScheduledAt(b));
+        if (scheduledCompare !== 0) return scheduledCompare;
+        return campaignPlatformOrder[a.platform] - campaignPlatformOrder[b.platform];
+      });
+      const firstItem = sortedItems[0];
+      const imageItem = sortedItems.find((item) => getCampaignItemImageSource(item));
+
+      return {
+        id,
+        campaignId: firstItem.campaign_id,
+        business: getCampaignItemBusiness(firstItem),
+        weekKey: getContentItemWeekKey(firstItem),
+        title: getContentSlotTitle(sortedItems),
+        contentType: getContentItemType(firstItem),
+        dayIndex: getContentItemDayIndex(firstItem),
+        scheduledAt: getContentItemScheduledAt(firstItem),
+        imageSource: imageItem ? getCampaignItemImageSource(imageItem) : null,
+        statusSummary: getContentSlotStatusSummary(sortedItems),
+        sourceItems: sortedItems,
+        platformPosts: buildPlatformPosts(sortedItems),
+      };
+    })
+    .sort((a, b) => {
+      const dayCompare = a.dayIndex - b.dayIndex;
+      if (dayCompare !== 0) return dayCompare;
+      return (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? '');
+    });
+}
+
+function buildWeeklyCampaignCalendars(items: CampaignContentQueueItem[]): WeeklyCampaignCalendar[] {
+  const groups = new Map<string, CampaignContentQueueItem[]>();
+
+  for (const item of items) {
+    // TODO: Replace week grouping with backend Campaign.weekStart/weekEnd fields during the model migration.
+    const groupKey = `${item.campaign_id}:${getContentItemWeekKey(item)}`;
+    const groupItems = groups.get(groupKey) ?? [];
+    groupItems.push(item);
+    groups.set(groupKey, groupItems);
+  }
+
+  return Array.from(groups.entries())
+    .map(([groupKey, groupItems]) => {
+      const firstItem = groupItems[0];
+      return {
+        campaignId: firstItem.campaign_id,
+        business: getCampaignItemBusiness(firstItem),
+        weekKey: getContentItemWeekKey(firstItem),
+        contentSlots: buildContentSlots(groupItems),
+      };
+    })
+    .sort((a, b) => a.business.localeCompare(b.business) || a.weekKey.localeCompare(b.weekKey));
+}
+
+function getPlatformBadgeState(slot: ContentSlot, platform: CalendarPlatform) {
+  return slot.platformPosts.some((post) => {
+    if (platform === 'Facebook') return post.platform === 'Facebook' || post.platform === 'Facebook Groups';
+    return post.platform === platform;
+  });
 }
 
 function formatDisplayDate(value: string | null) {
@@ -346,6 +692,57 @@ function datetimeLocalToIso(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function parseDateInputAsUtc(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatUtcDateInputValue(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+function getWeekdayDateInputValue(weekStartDate: string, dayIndex: number) {
+  const weekStart = parseDateInputAsUtc(weekStartDate) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
+  if (!weekStart) return getDefaultWeekStartDateInput();
+
+  const scheduledDate = new Date(weekStart);
+  scheduledDate.setUTCDate(weekStart.getUTCDate() + dayIndex);
+  return formatUtcDateInputValue(scheduledDate);
+}
+
+function recalculateScheduledAtForWeekday(slot: ContentSlot, targetDayIndex: number, weekStartDate: string) {
+  const scheduledDate = parseDateInputAsUtc(getWeekdayDateInputValue(weekStartDate, targetDayIndex));
+  if (!scheduledDate) return null;
+
+  const existingDate = slot.scheduledAt ? new Date(slot.scheduledAt) : null;
+  const hasExistingTime = existingDate && !Number.isNaN(existingDate.getTime());
+
+  scheduledDate.setUTCHours(
+    hasExistingTime ? existingDate.getUTCHours() : 15,
+    hasExistingTime ? existingDate.getUTCMinutes() : 0,
+    hasExistingTime ? existingDate.getUTCSeconds() : 0,
+    0,
+  );
+  return scheduledDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function moveContentSlotItemsToDay(
+  items: CampaignContentQueueItem[],
+  contentIds: Set<string>,
+  scheduledAt: string,
+) {
+  return items.map((item) => (contentIds.has(item.content_id) ? { ...item, scheduled_at: scheduledAt } : item));
+}
+
+function deleteContentSlotItems(items: CampaignContentQueueItem[], contentIds: Set<string>) {
+  return items.filter((item) => !contentIds.has(item.content_id));
 }
 
 function renderGoogleBusinessPublishStatus(item: CampaignContentQueueItem) {
@@ -442,7 +839,6 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('posts');
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null);
   const [scheduleInputs, setScheduleInputs] = useState<Record<string, string>>({});
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
@@ -453,9 +849,20 @@ function App() {
   const [manualPostType, setManualPostType] = useState('General');
   const [includeFacebookGroups, setIncludeFacebookGroups] = useState(false);
   const [showGeneratePostOptions, setShowGeneratePostOptions] = useState(false);
+  const [showWeeklyScheduleModal, setShowWeeklyScheduleModal] = useState(false);
+  const [calendarWeekStartDate, setCalendarWeekStartDate] = useState(() => getDefaultWeekStartDateInput());
+  const [weeklyScheduleSettings, setWeeklyScheduleSettings] = useState<WeeklyScheduleSettings>(() =>
+    defaultWeeklyScheduleSettings(),
+  );
   const [showPreviousPosts, setShowPreviousPosts] = useState(false);
   const [expandedQueueJobs, setExpandedQueueJobs] = useState<Record<string, boolean>>({});
   const [expandedCampaignQueue, setExpandedCampaignQueue] = useState<Record<string, boolean>>({});
+  const [selectedContentSlotId, setSelectedContentSlotId] = useState<string | null>(null);
+  const [isMobileCalendar, setIsMobileCalendar] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia('(max-width: 900px)').matches,
+  );
+  const [calendarDrag, setCalendarDrag] = useState<CalendarDragState | null>(null);
+  const [pendingDeleteContentSlotId, setPendingDeleteContentSlotId] = useState<string | null>(null);
   const [postAssistantItem, setPostAssistantItem] = useState<CampaignContentQueueItem | null>(null);
   const [postAssistantCopiedAction, setPostAssistantCopiedAction] = useState<PostAssistantCopiedAction>(null);
   const [postAssistantError, setPostAssistantError] = useState<string | null>(null);
@@ -463,6 +870,8 @@ function App() {
   const [campaignPreview, setCampaignPreview] = useState<{ campaign: Campaign; draftSet: CampaignDraftSet } | null>(
     null,
   );
+  const calendarDragCandidateRef = useRef<CalendarDragCandidate | null>(null);
+  const suppressContentSlotClickRef = useRef(false);
 
   const loadJobs = useCallback(async () => {
     setLoadingJobs(true);
@@ -508,24 +917,21 @@ function App() {
     }
   }, []);
 
-  const loadWeeklyQueue = useCallback(async () => {
+  const loadWeeklyQueue = useCallback(async (weekStartDate = calendarWeekStartDate) => {
     setLoadingWeeklyQueue(true);
     try {
-      setWeeklyQueue(await getWeeklySocialQueue());
+      setWeeklyQueue(await getWeeklySocialQueue(weekStartDate));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load weekly posting queue.');
     } finally {
       setLoadingWeeklyQueue(false);
     }
-  }, []);
+  }, [calendarWeekStartDate]);
 
   useEffect(() => {
-    void loadJobs();
-    void loadQueue();
     void loadCampaigns();
-    void loadCampaignQueue();
     void loadWeeklyQueue();
-  }, [loadCampaigns, loadCampaignQueue, loadJobs, loadQueue, loadWeeklyQueue]);
+  }, [loadCampaigns, loadWeeklyQueue]);
 
   useEffect(() => {
     if (!postAssistantItem) return undefined;
@@ -539,6 +945,38 @@ function App() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [postAssistantItem]);
+
+  useEffect(() => {
+    if (!selectedContentSlotId) return undefined;
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        closeContentSlot();
+      }
+    }
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedContentSlotId]);
+
+  useEffect(() => {
+    const mobileCalendarQuery = window.matchMedia('(max-width: 900px)');
+    const syncMobileCalendar = () => setIsMobileCalendar(mobileCalendarQuery.matches);
+
+    syncMobileCalendar();
+    mobileCalendarQuery.addEventListener('change', syncMobileCalendar);
+    return () => mobileCalendarQuery.removeEventListener('change', syncMobileCalendar);
+  }, []);
+
+  useEffect(() => {
+    if (!calendarDrag) {
+      document.body.classList.remove('calendar-drag-active');
+      return undefined;
+    }
+
+    document.body.classList.add('calendar-drag-active');
+    return () => document.body.classList.remove('calendar-drag-active');
+  }, [calendarDrag]);
 
   const queueCounts = useMemo(() => {
     return queue.reduce(
@@ -562,7 +1000,7 @@ function App() {
 
   const weeklyQueueItems = useMemo(() => {
     return [...weeklyQueue].sort((a, b) => {
-      const scheduledCompare = (a.scheduled_at ?? '').localeCompare(b.scheduled_at ?? '');
+      const scheduledCompare = getContentItemScheduledAt(a).localeCompare(getContentItemScheduledAt(b));
       if (scheduledCompare !== 0) return scheduledCompare;
       return campaignPlatformOrder[a.platform] - campaignPlatformOrder[b.platform];
     });
@@ -571,6 +1009,39 @@ function App() {
   const activeWeeklyQueueItems = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status !== 'Posted' && item.status !== 'Skipped');
   }, [weeklyQueueItems]);
+
+  const weeklyCampaignCalendars = useMemo(() => {
+    return buildWeeklyCampaignCalendars(weeklyQueueItems);
+  }, [weeklyQueueItems]);
+
+  const weeklyContentSlots = useMemo(() => {
+    return weeklyCampaignCalendars
+      .flatMap((campaignCalendar) => campaignCalendar.contentSlots)
+      .sort((a, b) => {
+        const dayCompare = a.dayIndex - b.dayIndex;
+        if (dayCompare !== 0) return dayCompare;
+        const scheduledCompare = (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? '');
+        if (scheduledCompare !== 0) return scheduledCompare;
+        return a.business.localeCompare(b.business);
+      });
+  }, [weeklyCampaignCalendars]);
+
+  const weeklyCalendarDays = useMemo<WeeklyCalendarDay[]>(() => {
+    return calendarDays.map((day, dayIndex) => ({
+      ...day,
+      contentSlots: weeklyContentSlots.filter((slot) => slot.dayIndex === dayIndex),
+    }));
+  }, [weeklyContentSlots]);
+
+  const selectedContentSlot = useMemo(() => {
+    if (!selectedContentSlotId) return null;
+    return weeklyContentSlots.find((slot) => slot.id === selectedContentSlotId) ?? null;
+  }, [selectedContentSlotId, weeklyContentSlots]);
+
+  const pendingDeleteContentSlot = useMemo(() => {
+    if (!pendingDeleteContentSlotId) return null;
+    return weeklyContentSlots.find((slot) => slot.id === pendingDeleteContentSlotId) ?? null;
+  }, [pendingDeleteContentSlotId, weeklyContentSlots]);
 
   const previousWeeklyPosts = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status === 'Posted' || item.status === 'Skipped');
@@ -722,23 +1193,45 @@ function App() {
     }
   }
 
-  async function handleGenerateWeeklyPosts() {
+  async function handleGenerateWeeklyPosts(settings: WeeklyScheduleSettings) {
+    if (settings.platforms.length === 0) {
+      setError('Choose at least one platform for the weekly schedule.');
+      return;
+    }
+    if (settings.contentTypes.length === 0) {
+      setError('Choose at least one content type for the weekly schedule.');
+      return;
+    }
+    if (!settings.weekStartDate) {
+      setError('Choose a week start date for the weekly schedule.');
+      return;
+    }
+
     setBusyAction('generate-weekly-posts');
     setError(null);
     setWarning(null);
     const hadWeeklyPosts = activeWeeklyQueueItems.length > 0;
+    const campaignTheme = settings.campaignTheme.trim() || defaultWeeklyCampaignTheme;
     try {
       const result = await generateWeeklySocialPosts({
         campaign_id: selectedCampaignId || null,
-        include_facebook_groups: includeFacebookGroups,
+        platforms: settings.platforms,
+        posts_per_platform: settings.contentDays,
+        content_days: settings.contentDays,
+        week_start_date: settings.weekStartDate,
+        content_types: settings.contentTypes,
+        campaign_theme: campaignTheme,
+        separate_meta_platforms: true,
       });
-      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+      setCalendarWeekStartDate(settings.weekStartDate);
+      await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue()]);
+      setShowWeeklyScheduleModal(false);
       setWarning(
         result.existing
-          ? 'This week already has all scheduled posts. Showing the existing queue.'
+          ? 'This weekly schedule already has all selected slots. Showing the existing queue.'
           : hadWeeklyPosts
-            ? 'Generated missing posts for this week.'
-            : 'Generated posts for this week.',
+            ? 'Generated missing scheduled posts for this week.'
+            : 'Generated scheduled posts for this week.',
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate weekly posts.');
@@ -897,6 +1390,42 @@ function App() {
     }
   }
 
+  async function handleApproveWeeklyPost(item: CampaignContentQueueItem) {
+    const actionKey = `weekly-approve:${item.content_id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      await approveCampaignContent(item.content_id);
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to approve weekly post.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleRegeneratePlatformPost(post: PlatformPost) {
+    const actionKey = `weekly-regenerate:${post.id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      // TODO: Replace this additive generation call with a slot-aware regenerate endpoint that updates one PlatformPost.
+      const result = await generateManualSocialPost({
+        campaign_id: post.item.campaign_id,
+        platform: post.sourcePlatform,
+        post_type: getContentItemType(post.item),
+      });
+      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
+      setWarning(`Generated ${result.queue_items.length} new draft candidate. Review it before posting.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to regenerate weekly post.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleRestoreWeeklyPost(contentId: string) {
     const actionKey = `weekly-restore:${contentId}`;
     setBusyAction(actionKey);
@@ -909,6 +1438,85 @@ function App() {
       setError(err instanceof Error ? err.message : 'Unable to restore post to the queue.');
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function handleDeleteWeeklyPost(item: CampaignContentQueueItem) {
+    const confirmed = window.confirm(
+      [
+        `Delete this ${formatPlatformLabel(item.platform)} post permanently?`,
+        '',
+        `Content ID: ${item.content_id}`,
+        'This removes the row from the Posts sheet and cannot be undone.',
+      ].join('\n'),
+    );
+    if (!confirmed) return;
+
+    const actionKey = `weekly-delete:${item.content_id}`;
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    try {
+      await deletePost(item.content_id);
+      await loadWeeklyQueue();
+      setWarning('Post deleted from the queue.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete post.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function moveContentSlotToDay(slot: ContentSlot, targetDayIndex: number) {
+    if (slot.dayIndex === targetDayIndex) return;
+
+    const scheduledAt = recalculateScheduledAtForWeekday(slot, targetDayIndex, calendarWeekStartDate);
+    if (!scheduledAt) {
+      setError('Unable to calculate the target scheduled date.');
+      return;
+    }
+
+    const previousWeeklyQueue = weeklyQueue;
+    const contentIds = new Set(slot.sourceItems.map((item) => item.content_id));
+    const targetDayLabel = calendarDays[targetDayIndex]?.label ?? 'the selected day';
+
+    setError(null);
+    setWarning(null);
+    setWeeklyQueue((current) => moveContentSlotItemsToDay(current, contentIds, scheduledAt));
+
+    try {
+      // TODO: Replace per-platform post schedule updates with a backend ContentSlot move endpoint.
+      await Promise.all(slot.sourceItems.map((item) => updatePostScheduledAt(item.content_id, scheduledAt)));
+      await loadWeeklyQueue(calendarWeekStartDate);
+      setWarning(`Moved "${slot.title}" to ${targetDayLabel}.`);
+    } catch (err) {
+      setWeeklyQueue(previousWeeklyQueue);
+      setError(err instanceof Error ? err.message : 'Unable to move content slot.');
+    }
+  }
+
+  async function handleConfirmDeleteContentSlot() {
+    const slot = pendingDeleteContentSlot;
+    if (!slot) {
+      setPendingDeleteContentSlotId(null);
+      return;
+    }
+
+    const previousWeeklyQueue = weeklyQueue;
+    const contentIds = new Set(slot.sourceItems.map((item) => item.content_id));
+
+    setPendingDeleteContentSlotId(null);
+    setError(null);
+    setWarning(null);
+    setWeeklyQueue((current) => deleteContentSlotItems(current, contentIds));
+
+    try {
+      await Promise.all(slot.sourceItems.map((item) => deletePost(item.content_id)));
+      await loadWeeklyQueue();
+      setWarning('Content slot deleted from the weekly calendar.');
+    } catch (err) {
+      setWeeklyQueue(previousWeeklyQueue);
+      setError(err instanceof Error ? err.message : 'Unable to delete content slot.');
     }
   }
 
@@ -1021,6 +1629,176 @@ function App() {
     setPostAssistantError(null);
     setError(null);
     setWarning(null);
+  }
+
+  function detectCalendarDropTarget(clientX: number, clientY: number): CalendarDropTarget {
+    const element = document.elementFromPoint(clientX, clientY);
+    if (!(element instanceof Element)) {
+      return { dayIndex: null, overTrash: false, dayElement: null };
+    }
+
+    const overTrash = Boolean(element.closest('[data-calendar-trash-zone="true"]'));
+    const dayElement = element.closest('[data-calendar-day-index]') as HTMLDetailsElement | null;
+    const rawDayIndex = dayElement?.dataset.calendarDayIndex;
+    const parsedDayIndex = rawDayIndex === undefined ? null : Number.parseInt(rawDayIndex, 10);
+    const dayIndex = parsedDayIndex !== null && Number.isFinite(parsedDayIndex) ? parsedDayIndex : null;
+
+    if (isMobileCalendar && dayElement instanceof HTMLDetailsElement) {
+      dayElement.open = true;
+    }
+
+    return {
+      dayIndex,
+      overTrash,
+      dayElement,
+    };
+  }
+
+  function maybeAutoScrollCalendar(clientY: number) {
+    const edgeSize = 76;
+    const scrollStep = 18;
+
+    if (clientY < edgeSize) {
+      window.scrollBy({ top: -scrollStep, behavior: 'auto' });
+    } else if (window.innerHeight - clientY < edgeSize) {
+      window.scrollBy({ top: scrollStep, behavior: 'auto' });
+    }
+  }
+
+  function updateCalendarDragTarget(clientX: number, clientY: number) {
+    const target = detectCalendarDropTarget(clientX, clientY);
+    maybeAutoScrollCalendar(clientY);
+
+    setCalendarDrag((current) =>
+      current
+        ? {
+            ...current,
+            currentX: clientX,
+            currentY: clientY,
+            overDayIndex: target.overTrash ? null : target.dayIndex,
+            overTrash: target.overTrash,
+          }
+        : current,
+    );
+
+    return target;
+  }
+
+  function handleContentSlotPointerDown(event: ReactPointerEvent<HTMLButtonElement>, slot: ContentSlot) {
+    if (event.button !== 0 || busyAction) return;
+    if (
+      event.pointerType !== 'mouse' &&
+      event.target instanceof Element &&
+      !event.target.closest('[data-calendar-drag-handle="true"]')
+    ) {
+      return;
+    }
+
+    const sourceRect = event.currentTarget.getBoundingClientRect();
+    calendarDragCandidateRef.current = {
+      slotId: slot.id,
+      originDayIndex: slot.dayIndex,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      grabOffsetX: event.clientX - sourceRect.left,
+      grabOffsetY: event.clientY - sourceRect.top,
+      sourceWidth: sourceRect.width,
+      sourceHeight: sourceRect.height,
+      hasStarted: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleContentSlotPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const candidate = calendarDragCandidateRef.current;
+    if (!candidate || candidate.pointerId !== event.pointerId) return;
+
+    const movement = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
+    if (!candidate.hasStarted && movement < 7) return;
+
+    event.preventDefault();
+    suppressContentSlotClickRef.current = true;
+
+    if (!candidate.hasStarted) {
+      const target = detectCalendarDropTarget(event.clientX, event.clientY);
+      candidate.hasStarted = true;
+      setCalendarDrag({
+        slotId: candidate.slotId,
+        originDayIndex: candidate.originDayIndex,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        grabOffsetX: candidate.grabOffsetX,
+        grabOffsetY: candidate.grabOffsetY,
+        sourceWidth: candidate.sourceWidth,
+        sourceHeight: candidate.sourceHeight,
+        overDayIndex: target.overTrash ? null : target.dayIndex,
+        overTrash: target.overTrash,
+      });
+      return;
+    }
+
+    updateCalendarDragTarget(event.clientX, event.clientY);
+  }
+
+  function handleContentSlotPointerEnd(event: ReactPointerEvent<HTMLButtonElement>) {
+    const candidate = calendarDragCandidateRef.current;
+    if (!candidate || candidate.pointerId !== event.pointerId) return;
+
+    const wasDragging = candidate.hasStarted;
+    const canceled = event.type === 'pointercancel';
+    const target = wasDragging && !canceled ? detectCalendarDropTarget(event.clientX, event.clientY) : null;
+    const activeSlotId = candidate.slotId;
+
+    calendarDragCandidateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    if (!wasDragging) return;
+
+    event.preventDefault();
+    suppressContentSlotClickRef.current = true;
+    window.setTimeout(() => {
+      suppressContentSlotClickRef.current = false;
+    }, 0);
+    setCalendarDrag(null);
+    if (canceled) return;
+
+    const activeSlot = weeklyContentSlots.find((slot) => slot.id === activeSlotId);
+    if (!activeSlot) return;
+
+    if (target?.overTrash) {
+      setPendingDeleteContentSlotId(activeSlot.id);
+      return;
+    }
+
+    if (target?.dayIndex !== null && target?.dayIndex !== undefined) {
+      void moveContentSlotToDay(activeSlot, target.dayIndex);
+    }
+  }
+
+  function handleContentSlotClick(event: ReactMouseEvent<HTMLButtonElement>, slot: ContentSlot) {
+    if (suppressContentSlotClickRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressContentSlotClickRef.current = false;
+      return;
+    }
+
+    openContentSlot(slot);
+  }
+
+  function openContentSlot(slot: ContentSlot) {
+    setSelectedContentSlotId(slot.id);
+    setPostAssistantError(null);
+    setError(null);
+    setWarning(null);
+  }
+
+  function closeContentSlot() {
+    setSelectedContentSlotId(null);
+    setEditingDraftId(null);
   }
 
   function closePostAssistant() {
@@ -1181,7 +1959,6 @@ function App() {
   }
 
   const postAssistantImageSource = postAssistantItem ? getCampaignItemImageSource(postAssistantItem) : null;
-
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1191,9 +1968,7 @@ function App() {
           className="icon-button topbar-refresh-button"
           title="Refresh"
           type="button"
-          onClick={() =>
-            void Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue(), loadWeeklyQueue()])
-          }
+          onClick={() => void Promise.all([loadCampaigns(), loadWeeklyQueue()])}
         >
           <Icon name="restore" />
         </button>
@@ -1213,78 +1988,18 @@ function App() {
         </section>
       ) : null}
 
-      <div className="dashboard-switcher-wrap">
-        <div className="dashboard-switcher" data-active={activeDashboardTab} role="tablist" aria-label="Dashboard view">
-          <button
-            aria-selected={activeDashboardTab === 'posts'}
-            className={activeDashboardTab === 'posts' ? 'active' : ''}
-            role="tab"
-            type="button"
-            onClick={() => setActiveDashboardTab('posts')}
-          >
-            Posts
-          </button>
-          <button
-            aria-selected={activeDashboardTab === 'operations'}
-            className={activeDashboardTab === 'operations' ? 'active' : ''}
-            role="tab"
-            type="button"
-            onClick={() => setActiveDashboardTab('operations')}
-          >
-            Jobs + Queues
-          </button>
-        </div>
-      </div>
-
-      {activeDashboardTab === 'operations' ? (
-      <section className="summary-grid" aria-label="Dashboard summary">
-        <div className="metric">
-          <span>Completed Jobs</span>
-          <strong>{jobs.length}</strong>
-        </div>
-        <div className="metric">
-          <span>Queue Items</span>
-          <strong>{queue.length}</strong>
-        </div>
-        <div className="metric">
-          <span>Needs Review</span>
-          <strong>{queueCounts['Needs Review'] ?? 0}</strong>
-        </div>
-        <div className="metric">
-          <span>Approved</span>
-          <strong>{queueCounts.Approved ?? 0}</strong>
-        </div>
-        <div className="metric">
-          <span>Campaigns</span>
-          <strong>{campaigns.length}</strong>
-        </div>
-        <div className="metric">
-          <span>Campaign Drafts</span>
-          <strong>{campaignQueue.length}</strong>
-        </div>
-        <div className="metric">
-          <span>Campaign Needs Review</span>
-          <strong>{campaignQueueCounts['Needs Review'] ?? 0}</strong>
-        </div>
-        <div className="metric">
-          <span>Campaign Approved</span>
-          <strong>{campaignQueueCounts.Approved ?? 0}</strong>
-        </div>
-      </section>
-      ) : null}
-
-      {activeDashboardTab === 'posts' ? (
       <section className="panel weekly-panel">
         <div className="panel-heading weekly-heading">
           <div>
-            <h2>Posts to Publish This Week</h2>
+            <h2>Weekly Content Calendar</h2>
+            <p>Plan content by day, slot, and platform while keeping the existing post queue actions.</p>
           </div>
           <div className="panel-heading-actions">
             {loadingWeeklyQueue ? <span className="loading-label">Loading</span> : null}
             <button
               className="secondary-button"
               disabled={busyAction === 'generate-weekly-posts'}
-              onClick={() => void handleGenerateWeeklyPosts()}
+              onClick={() => setShowWeeklyScheduleModal(true)}
             >
               Generate Weekly Posts
             </button>
@@ -1352,110 +2067,99 @@ function App() {
           </div>
         ) : null}
 
-        {activeWeeklyQueueItems.length > 0 ? (
-          <div className="weekly-post-grid">
-            {activeWeeklyQueueItems.map((item) => {
-              const imageSource = getCampaignItemImageSource(item);
-              return (
-                <article className="weekly-post-card" key={item.content_id}>
-                  <div className="weekly-post-media">
-                    {imageSource ? (
-                      <img
-                        alt={item.image_filename ?? `${formatPlatformLabel(item.platform)} post image`}
-                        src={getMediaUrl(imageSource)}
-                      />
-                    ) : (
-                      <span>No image</span>
-                    )}
-                  </div>
-                  <div className="weekly-post-content">
-                    <div className="weekly-post-title-row">
-                      <div>
-                        <h3>{formatPlatformLabel(item.platform)}</h3>
-                        <span>{getCampaignItemBusiness(item)}</span>
-                      </div>
-                      <span className={`status-pill status-${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                        {item.status}
-                      </span>
-                    </div>
-                    <div className="weekly-post-meta">
-                      <span>{formatDisplayDate(item.scheduled_at)}</span>
-                      {item.post_type ? <span>{item.post_type}</span> : null}
-                    </div>
-                    {editingDraftId === item.content_id ? (
-                      <div className="draft-edit-block">
-                        <textarea
-                          aria-label={`Edit ${formatPlatformLabel(item.platform)} draft text`}
-                          value={draftTextEdits[item.content_id] ?? item.draft_text}
-                          onChange={(event) =>
-                            setDraftTextEdits((current) => ({
-                              ...current,
-                              [item.content_id]: event.target.value,
-                            }))
-                          }
-                        />
-                        <div className="draft-edit-actions">
-                          <button
-                            aria-label="Save draft"
-                            className="icon-button secondary-button"
-                            disabled={busyAction === `weekly-save-draft:${item.content_id}`}
-                            title="Save draft"
-                            onClick={() => void handleSaveDraftText(item)}
-                          >
-                            <Icon name="save" />
-                          </button>
-                          <button
-                            aria-label="Cancel draft edit"
-                            className="icon-button"
-                            disabled={busyAction === `weekly-save-draft:${item.content_id}`}
-                            title="Cancel"
-                            onClick={() => cancelEditingDraft(item.content_id)}
-                          >
-                            <Icon name="x" />
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <details className="caption-block">
-                        <summary>{item.draft_text}</summary>
-                        <p>{item.draft_text}</p>
-                      </details>
-                    )}
-                    <div className="weekly-post-links">
-                      {item.image_url ? (
-                        <a href={item.image_url} rel="noreferrer" target="_blank">
-                          Image URL
-                        </a>
-                      ) : null}
-                      {item.landing_page_url ? (
-                        <a href={item.landing_page_url} rel="noreferrer" target="_blank">
-                          Landing page
-                        </a>
-                      ) : null}
-                      {item.published_url ? (
-                        <a href={item.published_url} rel="noreferrer" target="_blank">
-                          Published post
-                        </a>
-                      ) : null}
-                    </div>
-                    {item.last_publish_error ? <p className="error-text">{item.last_publish_error}</p> : null}
-                  </div>
-                  <div className="weekly-post-actions">
-                    <button
-                      className="post-assistant-open-button"
-                      type="button"
-                      onClick={() => openPostAssistant(item)}
-                    >
-                      Post
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+        {weeklyCampaignCalendars.length > 0 ? (
+          <div className="weekly-campaign-summary" aria-label="Weekly campaign summary">
+            {weeklyCampaignCalendars.map((campaignCalendar) => (
+              <span key={`${campaignCalendar.campaignId}:${campaignCalendar.weekKey}`}>
+                <strong>{campaignCalendar.business}</strong>
+                {campaignCalendar.weekKey} · {campaignCalendar.contentSlots.length} slots
+              </span>
+            ))}
           </div>
         ) : null}
-        {!loadingWeeklyQueue && activeWeeklyQueueItems.length === 0 ? (
-          <div className="empty-cell">No posts are queued for this week yet.</div>
+
+        {weeklyContentSlots.length > 0 ? (
+          <div className="weekly-calendar-grid" aria-label="Weekly content calendar">
+            {weeklyCalendarDays.map((day, dayIndex) => (
+              <details
+                className={`calendar-day-column ${
+                  calendarDrag?.overDayIndex === dayIndex && !calendarDrag.overTrash ? 'calendar-day-column-drop-target' : ''
+                }`}
+                data-calendar-day-index={dayIndex}
+                key={day.key}
+                open={isMobileCalendar ? undefined : true}
+              >
+                <summary className="calendar-day-heading">
+                  <span>{day.shortLabel}</span>
+                  <strong>{day.label}</strong>
+                  <em>{day.contentSlots.length}</em>
+                </summary>
+                {day.contentSlots.length > 0 ? (
+                  <div className="content-slot-list">
+                    {day.contentSlots.map((slot) => (
+                      <button
+                        aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
+                        className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
+                        key={slot.id}
+                        type="button"
+                        onClick={(event) => handleContentSlotClick(event, slot)}
+                        onPointerCancel={handleContentSlotPointerEnd}
+                        onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
+                        onPointerMove={handleContentSlotPointerMove}
+                        onPointerUp={handleContentSlotPointerEnd}
+                      >
+                        <div className="content-slot-media">
+                          {slot.imageSource ? (
+                            <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} />
+                          ) : (
+                            <span>No image</span>
+                          )}
+                        </div>
+                        <div className="content-slot-body">
+                          <div className="content-slot-title-row">
+                            <h3>{slot.title}</h3>
+                            <span className="content-type-pill">{slot.contentType}</span>
+                          </div>
+                          <div className="content-slot-meta">
+                            <span>{slot.business}</span>
+                            <span>{formatDisplayDate(slot.scheduledAt)}</span>
+                          </div>
+                          <div className="platform-badge-row" aria-label="Generated platforms">
+                            {coreCalendarPlatforms.map((platform) => (
+                              <span
+                                className={`platform-badge ${
+                                  getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''
+                                }`}
+                                key={platform}
+                              >
+                                {platform === 'Google Business' ? 'Google' : platform}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="content-slot-status">
+                            <span>{slot.statusSummary}</span>
+                            <span>{slot.platformPosts.length} platform posts</span>
+                          </div>
+                        </div>
+                        <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="calendar-empty-cell">No slots</div>
+                )}
+              </details>
+            ))}
+          </div>
+        ) : null}
+        {calendarDrag ? (
+          <CalendarTrashDropZone active={calendarDrag.overTrash} />
+        ) : null}
+        {calendarDrag ? (
+          <CalendarDragPreview drag={calendarDrag} slot={weeklyContentSlots.find((slot) => slot.id === calendarDrag.slotId) ?? null} />
+        ) : null}
+        {!loadingWeeklyQueue && weeklyContentSlots.length === 0 ? (
+          <div className="empty-cell">No content slots are queued for this week yet.</div>
         ) : null}
         <div className="previous-posts-section">
           <button
@@ -1495,28 +2199,38 @@ function App() {
                             {item.status === 'Skipped' ? 'Skipped' : 'Posted'}:{' '}
                             {formatDisplayDate(item.published_at)}
                           </span>
-                          <span>Scheduled: {formatDisplayDate(item.scheduled_at)}</span>
+                          <span>Scheduled: {formatDisplayDate(getContentItemScheduledAt(item))}</span>
                         </div>
                         <p>{item.draft_text}</p>
                       </div>
-                      <button
-                        aria-label="Add back to queue"
-                        className="icon-button"
-                        disabled={busyAction === `weekly-restore:${item.content_id}`}
-                        title="Add back to queue"
-                        onClick={() => void handleRestoreWeeklyPost(item.content_id)}
-                      >
-                        <Icon name="restore" />
-                      </button>
-                      <button
-                        aria-label="Share / Save Image"
-                        className="icon-button image-download-button"
-                        title="Share / Save Image. On iPhone, use the share sheet to save to Photos or send to another app. On desktop, the image will download."
-                        type="button"
-                        onClick={() => void shareOrSaveImage(item)}
-                      >
-                        <Icon name="download" />
-                      </button>
+                      <div className="previous-post-actions">
+                        <button
+                          aria-label="Add back to queue"
+                          className="icon-button"
+                          disabled={busyAction === `weekly-restore:${item.content_id}`}
+                          title="Add back to queue"
+                          onClick={() => void handleRestoreWeeklyPost(item.content_id)}
+                        >
+                          <Icon name="restore" />
+                        </button>
+                        <button
+                          aria-label="Share / Save Image"
+                          className="icon-button image-download-button"
+                          title="Share / Save Image. On iPhone, use the share sheet to save to Photos or send to another app. On desktop, the image will download."
+                          type="button"
+                          onClick={() => void shareOrSaveImage(item)}
+                        >
+                          <Icon name="download" />
+                        </button>
+                        <button
+                          className="danger-button"
+                          disabled={busyAction === `weekly-delete:${item.content_id}`}
+                          type="button"
+                          onClick={() => void handleDeleteWeeklyPost(item)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </article>
                   );
                 })}
@@ -1527,9 +2241,8 @@ function App() {
           ) : null}
         </div>
       </section>
-      ) : null}
 
-      {activeDashboardTab === 'operations' ? (
+      {false ? (
       <>
       <section className="panel">
         <div className="panel-heading">
@@ -1954,6 +2667,44 @@ function App() {
       {campaignPreview ? (
         <CampaignDraftPreview preview={campaignPreview} onClose={() => setCampaignPreview(null)} />
       ) : null}
+      {showWeeklyScheduleModal ? (
+        <WeeklyScheduleModal
+          busy={busyAction === 'generate-weekly-posts'}
+          settings={weeklyScheduleSettings}
+          onCancel={() => setShowWeeklyScheduleModal(false)}
+          onChange={setWeeklyScheduleSettings}
+          onGenerate={(settings) => void handleGenerateWeeklyPosts(settings)}
+        />
+      ) : null}
+      {selectedContentSlot ? (
+        <ContentSlotDetailModal
+          busyAction={busyAction}
+          draftTextEdits={draftTextEdits}
+          editingDraftId={editingDraftId}
+          slot={selectedContentSlot}
+          onApprove={handleApproveWeeklyPost}
+          onCancelEdit={cancelEditingDraft}
+          onClose={closeContentSlot}
+          onDelete={handleDeleteWeeklyPost}
+          onDraftTextChange={(contentId, draftText) =>
+            setDraftTextEdits((current) => ({
+              ...current,
+              [contentId]: draftText,
+            }))
+          }
+          onPost={openPostAssistant}
+          onRegenerate={handleRegeneratePlatformPost}
+          onSaveDraft={handleSaveDraftText}
+          onStartEdit={startEditingDraft}
+        />
+      ) : null}
+      {pendingDeleteContentSlot ? (
+        <DeleteContentSlotConfirmModal
+          slot={pendingDeleteContentSlot}
+          onCancel={() => setPendingDeleteContentSlotId(null)}
+          onConfirm={() => void handleConfirmDeleteContentSlot()}
+        />
+      ) : null}
       {postAssistantItem ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={closePostAssistant}>
           <section
@@ -1981,7 +2732,7 @@ function App() {
             <div className="post-assistant-summary">
               <span>{getCampaignItemBusiness(postAssistantItem)}</span>
               <span>{formatPlatformLabel(postAssistantItem.platform)}</span>
-              <span>{formatDisplayDate(postAssistantItem.scheduled_at)}</span>
+              <span>{formatDisplayDate(getContentItemScheduledAt(postAssistantItem))}</span>
               {postAssistantItem.post_type ? <span>{postAssistantItem.post_type}</span> : null}
             </div>
 
@@ -2062,6 +2813,425 @@ function App() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function CalendarTrashDropZone({ active }: { active: boolean }) {
+  return (
+    <div
+      className={`calendar-trash-zone ${active ? 'calendar-trash-zone-active' : ''}`}
+      data-calendar-trash-zone="true"
+      role="button"
+      aria-label="Drop content slot here to delete it"
+      aria-live="polite"
+    >
+      <Icon name="trash" />
+      <div>
+        <strong>Drop to delete</strong>
+        <span>Confirmation required</span>
+      </div>
+    </div>
+  );
+}
+
+function CalendarDragPreview({ drag, slot }: { drag: CalendarDragState; slot: ContentSlot | null }) {
+  if (!slot) return null;
+
+  return (
+    <div
+      className="calendar-drag-preview"
+      style={{
+        height: drag.sourceHeight,
+        transform: `translate3d(${drag.currentX - drag.grabOffsetX}px, ${drag.currentY - drag.grabOffsetY}px, 0)`,
+        width: drag.sourceWidth,
+      }}
+      aria-hidden="true"
+    >
+      <div className="content-slot-media">
+        {slot.imageSource ? <img alt="" src={getMediaUrl(slot.imageSource)} /> : <span>No image</span>}
+      </div>
+      <div className="content-slot-body">
+        <div className="content-slot-title-row">
+          <h3>{slot.title}</h3>
+          <span className="content-type-pill">{slot.contentType}</span>
+        </div>
+        <div className="content-slot-meta">
+          <span>{slot.business}</span>
+          <span>{formatDisplayDate(slot.scheduledAt)}</span>
+        </div>
+      </div>
+      <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" />
+    </div>
+  );
+}
+
+function DeleteContentSlotConfirmModal({
+  slot,
+  onCancel,
+  onConfirm,
+}: {
+  slot: ContentSlot;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel delete-confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-content-slot-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="delete-content-slot-title">Delete this post?</h2>
+            <p>{slot.title}</p>
+          </div>
+        </div>
+        <p className="delete-confirm-message">
+          This will remove the content slot and its platform posts from the weekly calendar.
+        </p>
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="danger-button" type="button" onClick={onConfirm}>
+            Delete Post
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WeeklyScheduleModal({
+  busy,
+  settings,
+  onCancel,
+  onChange,
+  onGenerate,
+}: {
+  busy: boolean;
+  settings: WeeklyScheduleSettings;
+  onCancel: () => void;
+  onChange: (settings: WeeklyScheduleSettings) => void;
+  onGenerate: (settings: WeeklyScheduleSettings) => void;
+}) {
+  function updateSettings(update: Partial<WeeklyScheduleSettings>) {
+    onChange({ ...settings, ...update });
+  }
+
+  function togglePlatform(platform: WeeklySchedulePlatform) {
+    updateSettings({
+      platforms: settings.platforms.includes(platform)
+        ? settings.platforms.filter((currentPlatform) => currentPlatform !== platform)
+        : [...settings.platforms, platform],
+    });
+  }
+
+  function toggleContentType(contentType: string) {
+    updateSettings({
+      contentTypes: settings.contentTypes.includes(contentType)
+        ? settings.contentTypes.filter((currentType) => currentType !== contentType)
+        : [...settings.contentTypes, contentType],
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel weekly-schedule-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="weekly-schedule-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="weekly-schedule-title">Generate Weekly Content Schedule</h2>
+            <p>Choose the week, publishing days, platforms, and content mix before generating posts.</p>
+          </div>
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+
+        <div className="weekly-schedule-form">
+          <label className="form-field">
+            <span>Week start date</span>
+            <input
+              type="date"
+              value={settings.weekStartDate}
+              onChange={(event) => updateSettings({ weekStartDate: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Number of content days</span>
+            <input
+              max={7}
+              min={1}
+              type="number"
+              value={settings.contentDays}
+              onChange={(event) =>
+                updateSettings({
+                  contentDays: Math.min(7, Math.max(1, Number(event.target.value) || 1)),
+                })
+              }
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Campaign theme/title</span>
+            <input
+              type="text"
+              value={settings.campaignTheme}
+              onChange={(event) => updateSettings({ campaignTheme: event.target.value })}
+              placeholder={defaultWeeklyCampaignTheme}
+            />
+          </label>
+
+          <fieldset className="option-group">
+            <legend>Platforms to generate for</legend>
+            <div className="checkbox-grid">
+              {weeklySchedulePlatformOptions.map((platform) => (
+                <label className="checkbox-card" key={platform}>
+                  <input
+                    checked={settings.platforms.includes(platform)}
+                    type="checkbox"
+                    onChange={() => togglePlatform(platform)}
+                  />
+                  <span>{platform}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <fieldset className="option-group">
+            <legend>Content types to include</legend>
+            <div className="checkbox-grid content-type-grid">
+              {weeklyScheduleContentTypeOptions.map((contentType) => (
+                <label className="checkbox-card" key={contentType}>
+                  <input
+                    checked={settings.contentTypes.includes(contentType)}
+                    type="checkbox"
+                    onChange={() => toggleContentType(contentType)}
+                  />
+                  <span>{contentType}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy || !settings.weekStartDate || settings.platforms.length === 0 || settings.contentTypes.length === 0}
+            type="button"
+            onClick={() => onGenerate(settings)}
+          >
+            Generate Schedule
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ContentSlotDetailModal({
+  busyAction,
+  draftTextEdits,
+  editingDraftId,
+  slot,
+  onApprove,
+  onCancelEdit,
+  onClose,
+  onDelete,
+  onDraftTextChange,
+  onPost,
+  onRegenerate,
+  onSaveDraft,
+  onStartEdit,
+}: {
+  busyAction: BusyAction;
+  draftTextEdits: Record<string, string>;
+  editingDraftId: string | null;
+  slot: ContentSlot;
+  onApprove: (item: CampaignContentQueueItem) => Promise<void>;
+  onCancelEdit: (contentId: string) => void;
+  onClose: () => void;
+  onDelete: (item: CampaignContentQueueItem) => Promise<void>;
+  onDraftTextChange: (contentId: string, draftText: string) => void;
+  onPost: (item: CampaignContentQueueItem) => void;
+  onRegenerate: (post: PlatformPost) => Promise<void>;
+  onSaveDraft: (item: CampaignContentQueueItem) => Promise<void>;
+  onStartEdit: (item: CampaignContentQueueItem) => void;
+}) {
+  const missingCorePlatforms = coreCalendarPlatforms.filter((platform) => !getPlatformBadgeState(slot, platform));
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="modal-panel content-slot-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="content-slot-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="content-slot-title">{slot.title}</h2>
+            <p>
+              {slot.business} · {calendarDays[slot.dayIndex]?.label ?? 'Unscheduled'} ·{' '}
+              {formatDisplayDate(slot.scheduledAt)}
+            </p>
+          </div>
+          <button className="secondary-button" type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="content-slot-detail-grid">
+          <div className="content-slot-detail-media">
+            {slot.imageSource ? <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} /> : <span>No image</span>}
+          </div>
+          <div className="content-slot-detail-summary">
+            <span className="content-type-pill">{slot.contentType}</span>
+            <span className="status-pill status-draft">{slot.statusSummary}</span>
+            <span>Campaign: {slot.campaignId}</span>
+            <span>Week: {slot.weekKey}</span>
+            <div className="platform-badge-row">
+              {coreCalendarPlatforms.map((platform) => (
+                <span
+                  className={`platform-badge ${getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''}`}
+                  key={platform}
+                >
+                  {platform === 'Google Business' ? 'Google' : platform}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="platform-post-sections">
+          {slot.platformPosts.map((post, index) => {
+            const item = post.item;
+            const editing = editingDraftId === item.content_id;
+            const actionSuffix = post.id;
+            return (
+              <details className="platform-post-section" key={post.id} open={index === 0}>
+                <summary>
+                  <span>
+                    {post.platform}
+                    {post.sourcePlatform !== post.platform ? (
+                      <em>Shared {formatPlatformLabel(post.sourcePlatform)} post</em>
+                    ) : null}
+                  </span>
+                  <span className={statusClassName(getPlanningStatus(item))}>{getPlanningStatus(item)}</span>
+                </summary>
+                <div className="platform-post-body">
+                  <div className="platform-post-field">
+                    <strong>Caption / Body</strong>
+                    {editing ? (
+                      <textarea
+                        aria-label={`Edit ${post.platform} post text`}
+                        value={draftTextEdits[item.content_id] ?? item.draft_text}
+                        onChange={(event) => onDraftTextChange(item.content_id, event.target.value)}
+                      />
+                    ) : (
+                      <p>{item.draft_text}</p>
+                    )}
+                  </div>
+                  <div className="platform-post-meta">
+                    <span>Status: {item.status}</span>
+                    <span>Scheduled: {formatDisplayDate(getContentItemScheduledAt(item))}</span>
+                    <span>Approved: {item.approved}</span>
+                    <span>Published: {item.published}</span>
+                    {item.landing_page_url ? (
+                      <a href={item.landing_page_url} rel="noreferrer" target="_blank">
+                        Landing page
+                      </a>
+                    ) : null}
+                    {item.published_url ? (
+                      <a href={item.published_url} rel="noreferrer" target="_blank">
+                        Published post
+                      </a>
+                    ) : null}
+                  </div>
+                  {item.last_publish_error ? <p className="error-text">{item.last_publish_error}</p> : null}
+                  {renderGoogleBusinessPublishStatus(item)}
+                  {renderMetaPublishStatus(item)}
+                  <div className="platform-post-actions">
+                    {editing ? (
+                      <>
+                        <button
+                          className="secondary-button"
+                          disabled={busyAction === `weekly-save-draft:${item.content_id}`}
+                          type="button"
+                          onClick={() => void onSaveDraft(item)}
+                        >
+                          Save
+                        </button>
+                        <button
+                          disabled={busyAction === `weekly-save-draft:${item.content_id}`}
+                          type="button"
+                          onClick={() => onCancelEdit(item.content_id)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" onClick={() => onStartEdit(item)}>
+                        Edit
+                      </button>
+                    )}
+                    <button
+                      disabled={busyAction === `weekly-regenerate:${actionSuffix}`}
+                      type="button"
+                      onClick={() => void onRegenerate(post)}
+                    >
+                      Regenerate
+                    </button>
+                    <button
+                      disabled={busyAction === `weekly-approve:${item.content_id}`}
+                      type="button"
+                      onClick={() => void onApprove(item)}
+                    >
+                      Approve
+                    </button>
+                    <button className="secondary-button" type="button" onClick={() => onPost(item)}>
+                      Post
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={busyAction === `weekly-delete:${item.content_id}`}
+                      type="button"
+                      onClick={() => void onDelete(item)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </details>
+            );
+          })}
+          {missingCorePlatforms.map((platform) => (
+            <details className="platform-post-section platform-post-section-empty" key={`missing:${platform}`}>
+              <summary>
+                <span>{platform}</span>
+                <span className="status-pill status-draft">Missing</span>
+              </summary>
+              <div className="platform-post-body">
+                <p>No {platform} post has been generated for this content slot yet.</p>
+              </div>
+            </details>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 

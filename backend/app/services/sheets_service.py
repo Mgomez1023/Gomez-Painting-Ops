@@ -431,6 +431,30 @@ class SheetsService:
         self._update_posts_row(row_number=row_number, item=updated_post)
         return updated_post
 
+    def update_post_scheduled_at(self, content_id: str, scheduled_at: str) -> CampaignContentQueueItem | None:
+        match = self._find_post_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, post = match
+        updated_post = post.model_copy(
+            update={
+                "scheduled_at": scheduled_at,
+                "published": "No",
+            }
+        )
+        self._update_posts_row(row_number=row_number, item=updated_post)
+        return updated_post
+
+    def delete_post(self, content_id: str) -> CampaignContentQueueItem | None:
+        match = self._find_post_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, post = match
+        self._delete_posts_row(row_number)
+        return post
+
     def publish_campaign_content_queue_item(
         self,
         content_id: str,
@@ -928,6 +952,59 @@ class SheetsService:
             )
             .execute()
         )
+
+    def _delete_posts_row(self, row_number: int) -> None:
+        self._delete_sheet_row(
+            sheet_name=self.settings.google_posts_sheet_name,
+            row_number=row_number,
+        )
+
+    def _delete_sheet_row(self, sheet_name: str, row_number: int) -> None:
+        if row_number <= 1:
+            raise SheetsDataError("Refusing to delete a header row.")
+
+        spreadsheet_id = self._get_spreadsheet_id()
+        sheet_id = self._get_sheet_id(sheet_name)
+        (
+            self._get_sheets_client()
+            .spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "deleteDimension": {
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "dimension": "ROWS",
+                                    "startIndex": row_number - 1,
+                                    "endIndex": row_number,
+                                }
+                            }
+                        }
+                    ]
+                },
+            )
+            .execute()
+        )
+
+    def _get_sheet_id(self, sheet_name: str) -> int:
+        spreadsheet_id = self._get_spreadsheet_id()
+        result = (
+            self._get_sheets_client()
+            .spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title))",
+            )
+            .execute()
+        )
+        for sheet in result.get("sheets", []):
+            properties = sheet.get("properties", {})
+            if properties.get("title") == sheet_name and "sheetId" in properties:
+                return int(properties["sheetId"])
+
+        raise SheetsDataError(f"Sheet not found: {sheet_name}")
 
     def _get_sheets_client(self) -> Any:
         if self._sheets_client is not None:

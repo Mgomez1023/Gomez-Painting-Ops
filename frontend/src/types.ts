@@ -134,6 +134,11 @@ export type WeeklySocialQueueGenerateRequest = {
   campaign_id?: string | null;
   platforms?: CampaignContentQueueItem['platform'][] | null;
   posts_per_platform?: number;
+  content_days?: number;
+  week_start_date?: string | null;
+  content_types?: string[] | null;
+  campaign_theme?: string | null;
+  separate_meta_platforms?: boolean;
   include_facebook_groups?: boolean;
 };
 

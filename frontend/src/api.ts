@@ -85,8 +85,9 @@ export function getCampaignContentQueue(): Promise<CampaignContentQueueItem[]> {
   return request<CampaignContentQueueItem[]>('/campaign-content-queue');
 }
 
-export function getWeeklySocialQueue(): Promise<CampaignContentQueueItem[]> {
-  return request<CampaignContentQueueItem[]>('/posts/weekly');
+export function getWeeklySocialQueue(weekStartDate?: string | null): Promise<CampaignContentQueueItem[]> {
+  const query = weekStartDate ? `?week_start_date=${encodeURIComponent(weekStartDate)}` : '';
+  return request<CampaignContentQueueItem[]>(`/posts/weekly${query}`);
 }
 
 export function previewDraft(jobId: string): Promise<ContentDraft> {
@@ -203,6 +204,19 @@ export function updatePostDraftText(contentId: string, draftText: string): Promi
   return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/draft-text`, {
     method: 'PATCH',
     body: JSON.stringify({ draft_text: draftText }),
+  });
+}
+
+export function updatePostScheduledAt(contentId: string, scheduledAt: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/schedule`, {
+    method: 'PATCH',
+    body: JSON.stringify({ scheduled_at: scheduledAt }),
+  });
+}
+
+export function deletePost(contentId: string): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}`, {
+    method: 'DELETE',
   });
 }
 

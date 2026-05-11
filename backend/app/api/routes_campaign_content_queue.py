@@ -44,10 +44,11 @@ async def list_campaign_content_queue_items(
 
 @router.get("/weekly", response_model=list[CampaignContentQueueItem])
 async def list_weekly_social_posts(
+    week_start_date: str | None = None,
     social_queue_service: SocialQueueService = Depends(get_social_queue_service),
 ) -> list[CampaignContentQueueItem]:
     try:
-        return social_queue_service.list_current_week_posts()
+        return social_queue_service.list_week_posts(week_start_date)
     except SheetsConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
