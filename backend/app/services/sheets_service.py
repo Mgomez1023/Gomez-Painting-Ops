@@ -441,6 +441,7 @@ class SheetsService:
             update={
                 "scheduled_at": scheduled_at,
                 "published": "No",
+                "notes": self._update_schedule_notes(post.notes, scheduled_at),
             }
         )
         self._update_posts_row(row_number=row_number, item=updated_post)
@@ -807,7 +808,7 @@ class SheetsService:
     def _fetch_posts_rows(self) -> list[list[Any]]:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_posts_sheet_name
-        range_name = f"'{sheet_name}'!A:S"
+        range_name = f"'{sheet_name}'!A:AZ"
         result = (
             self._get_sheets_client()
             .spreadsheets()
@@ -939,7 +940,16 @@ class SheetsService:
     def _update_posts_row(self, row_number: int, item: CampaignContentQueueItem) -> None:
         spreadsheet_id = self._get_spreadsheet_id()
         sheet_name = self.settings.google_posts_sheet_name
-        range_name = f"'{sheet_name}'!A{row_number}:S{row_number}"
+        rows = self._fetch_posts_rows()
+        headers = [self._normalize_header(header) for header in rows[0]] if rows else []
+        existing_row = rows[row_number - 1] if row_number - 1 < len(rows) else []
+        row = self._campaign_content_queue_item_to_row_for_headers(
+            item=item,
+            headers=headers,
+            existing_row=existing_row,
+        )
+        last_column = self._spreadsheet_column_name(len(row))
+        range_name = f"'{sheet_name}'!A{row_number}:{last_column}{row_number}"
         (
             self._get_sheets_client()
             .spreadsheets()
@@ -948,7 +958,7 @@ class SheetsService:
                 spreadsheetId=spreadsheet_id,
                 range=range_name,
                 valueInputOption="RAW",
-                body={"values": [self._campaign_content_queue_item_to_row(item)]},
+                body={"values": [row]},
             )
             .execute()
         )
@@ -1176,6 +1186,44 @@ class SheetsService:
         ]
 
     @staticmethod
+    def _campaign_content_queue_item_to_row_for_headers(
+        item: CampaignContentQueueItem,
+        headers: list[str],
+        existing_row: list[Any] | None = None,
+    ) -> list[str]:
+        existing_values = [str(value) for value in (existing_row or [])]
+        row_length = max(len(headers), len(existing_values), len(SheetsService._campaign_content_queue_item_to_row(item)))
+        row = [existing_values[index] if index < len(existing_values) else "" for index in range(row_length)]
+        values_by_header = {
+            "content_id": item.content_id,
+            "campaign_id": item.campaign_id,
+            "platform": item.platform,
+            "draft_text": item.draft_text,
+            "cta": item.cta,
+            "landing_page_url": item.landing_page_url,
+            "image_filename": item.image_filename or "",
+            "image_path": item.image_path or "",
+            "image_url": item.image_url or "",
+            "business": item.business or "",
+            "post_type": item.post_type or "",
+            "status": item.status,
+            "approved": item.approved,
+            "published": item.published,
+            "created_at": item.created_at,
+            "published_at": item.published_at or "",
+            "notes": item.notes,
+            "scheduled_at": item.scheduled_at or "",
+            "publish_attempts": str(item.publish_attempts),
+            "last_publish_error": item.last_publish_error or "",
+            "external_post_id": item.external_post_id or "",
+            "published_url": item.published_url or "",
+        }
+        for index, header in enumerate(headers):
+            if header in values_by_header:
+                row[index] = values_by_header[header]
+        return row
+
+    @staticmethod
     def _row_to_content_queue_item(row_data: dict[str, Any]) -> ContentQueueItem:
         return ContentQueueItem(
             content_id=SheetsService._read_cell(row_data, "content_id"),
@@ -1317,6 +1365,44 @@ class SheetsService:
                 value = line.split(":", 1)[1].strip()
                 return value or None
         return None
+
+    @staticmethod
+    def _update_schedule_notes(notes: str, scheduled_at: str) -> str:
+        scheduled_date, day_of_week = SheetsService._schedule_note_values(scheduled_at)
+        updated_notes = SheetsService._replace_note_value(notes, "Scheduled Date", scheduled_date)
+        if day_of_week:
+            updated_notes = SheetsService._replace_note_value(updated_notes, "Day of Week", day_of_week)
+        return updated_notes
+
+    @staticmethod
+    def _schedule_note_values(scheduled_at: str) -> tuple[str, str]:
+        try:
+            scheduled_datetime = SheetsService._parse_iso_datetime(scheduled_at)
+        except SheetsDataError:
+            scheduled_date = scheduled_at.split("T", 1)[0].strip()
+            return scheduled_date, ""
+        return scheduled_datetime.date().isoformat(), scheduled_datetime.strftime("%A")
+
+    @staticmethod
+    def _replace_note_value(notes: str, key: str, value: str) -> str:
+        prefix = f"{key}:"
+        lines = notes.splitlines()
+        for index, line in enumerate(lines):
+            if line.strip().lower().startswith(prefix.lower()):
+                lines[index] = f"{key}: {value}"
+                return "\n".join(lines)
+        return "\n".join([*lines, f"{key}: {value}"]) if lines else f"{key}: {value}"
+
+    @staticmethod
+    def _spreadsheet_column_name(column_number: int) -> str:
+        if column_number < 1:
+            raise SheetsDataError("Spreadsheet column number must be positive.")
+        column_name = ""
+        current_column = column_number
+        while current_column:
+            current_column, remainder = divmod(current_column - 1, 26)
+            column_name = f"{chr(65 + remainder)}{column_name}"
+        return column_name
 
     @staticmethod
     def _parse_iso_datetime(value: str) -> datetime:

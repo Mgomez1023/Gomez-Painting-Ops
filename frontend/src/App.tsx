@@ -46,6 +46,49 @@ type PostAssistantCopiedAction = 'caption' | null;
 type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups' | 'Craigslist' | 'Nextdoor';
 type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business';
 type AppSection = 'calendar' | 'business-profile' | 'photo-library' | 'jobs-queues';
+type PhotoAssetQuality = 'standard' | 'strong' | 'hero';
+type PhotoAssetCategory =
+  | 'Before'
+  | 'After'
+  | 'Before/After Pair'
+  | 'Interior'
+  | 'Exterior'
+  | 'Cabinets'
+  | 'Trim'
+  | 'Drywall Repair'
+  | 'Team / Work In Progress'
+  | 'Finished Project';
+
+type PhotoAsset = {
+  id: string;
+  business_name: string;
+  image_url: string | null;
+  image_data: string | null;
+  image_filename: string | null;
+  title: string;
+  description: string;
+  category: PhotoAssetCategory;
+  service_type: string;
+  location: string;
+  tags: string[];
+  quality: PhotoAssetQuality;
+  used_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type PhotoAssetDraft = {
+  image_url: string | null;
+  image_data: string | null;
+  image_filename: string | null;
+  title: string;
+  description: string;
+  category: PhotoAssetCategory;
+  service_type: string;
+  location: string;
+  tagsText: string;
+  quality: PhotoAssetQuality;
+};
 
 type WeeklyScheduleSettings = {
   weekStartDate: string;
@@ -177,13 +220,13 @@ const manualPlatformOptions: CampaignContentQueueItem['platform'][] = [
 ];
 
 const calendarDays = [
+  { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
   { key: 'monday', label: 'Monday', shortLabel: 'Mon' },
   { key: 'tuesday', label: 'Tuesday', shortLabel: 'Tue' },
   { key: 'wednesday', label: 'Wednesday', shortLabel: 'Wed' },
   { key: 'thursday', label: 'Thursday', shortLabel: 'Thu' },
   { key: 'friday', label: 'Friday', shortLabel: 'Fri' },
   { key: 'saturday', label: 'Saturday', shortLabel: 'Sat' },
-  { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
 ];
 
 const calendarPlatformOrder: Record<CalendarPlatform, number> = {
@@ -210,7 +253,28 @@ const weeklyScheduleContentTypeOptions = [
 
 const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
 const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
+const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
+const maxPhotoAssetDataUrlLength = 2_800_000;
 const businessProfilePlatforms: BusinessProfile['platforms_used'] = ['Facebook', 'Instagram', 'Google Business'];
+
+const photoAssetCategories: PhotoAssetCategory[] = [
+  'Before',
+  'After',
+  'Before/After Pair',
+  'Interior',
+  'Exterior',
+  'Cabinets',
+  'Trim',
+  'Drywall Repair',
+  'Team / Work In Progress',
+  'Finished Project',
+];
+
+const photoAssetQualityOptions: Array<{ value: PhotoAssetQuality; label: string }> = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'strong', label: 'Strong' },
+  { value: 'hero', label: 'Hero' },
+];
 
 const defaultBusinessProfile: BusinessProfile = {
   business_name: 'Marom Painting',
@@ -339,11 +403,8 @@ function defaultWeeklyScheduleSettings(): WeeklyScheduleSettings {
   };
 }
 
-function parseProfileList(value: string) {
-  return value
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function parseEditableProfileList(value: string) {
+  return value.split('\n');
 }
 
 function formatProfileList(values: string[]) {
@@ -399,6 +460,200 @@ function weeklyPlatformsFromBusinessProfile(profile: BusinessProfile): WeeklySch
 
 function weeklyCampaignThemeFromBusinessProfile(profile: BusinessProfile) {
   return profile.business_name ? `${profile.business_name} Weekly Local Business Content` : defaultWeeklyCampaignTheme;
+}
+
+function isPhotoAssetCategory(value: unknown): value is PhotoAssetCategory {
+  return typeof value === 'string' && photoAssetCategories.includes(value as PhotoAssetCategory);
+}
+
+function isPhotoAssetQuality(value: unknown): value is PhotoAssetQuality {
+  return value === 'standard' || value === 'strong' || value === 'hero';
+}
+
+function normalizePhotoAsset(rawAsset: Partial<PhotoAsset> | null | undefined): PhotoAsset | null {
+  if (!rawAsset?.id || !rawAsset.title || (!rawAsset.image_data && !rawAsset.image_url)) return null;
+  const usedCount =
+    typeof rawAsset.used_count === 'number' && Number.isFinite(rawAsset.used_count) && rawAsset.used_count >= 0
+      ? rawAsset.used_count
+      : 0;
+
+  return {
+    id: rawAsset.id,
+    business_name: rawAsset.business_name?.trim() || defaultBusinessProfile.business_name,
+    image_url: rawAsset.image_url?.trim() || null,
+    image_data: rawAsset.image_data || null,
+    image_filename: rawAsset.image_filename?.trim() || null,
+    title: rawAsset.title.trim(),
+    description: rawAsset.description?.trim() || '',
+    category: isPhotoAssetCategory(rawAsset.category) ? rawAsset.category : 'Finished Project',
+    service_type: rawAsset.service_type?.trim() || '',
+    location: rawAsset.location?.trim() || '',
+    tags: (rawAsset.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
+    quality: isPhotoAssetQuality(rawAsset.quality) ? rawAsset.quality : 'standard',
+    used_count: usedCount,
+    created_at: rawAsset.created_at || new Date().toISOString(),
+    updated_at: rawAsset.updated_at || rawAsset.created_at || new Date().toISOString(),
+  };
+}
+
+function loadStoredPhotoAssets() {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const storedAssets = window.localStorage.getItem(photoLibraryStorageKey);
+    if (!storedAssets) return [];
+    const parsedAssets = JSON.parse(storedAssets) as unknown;
+    if (!Array.isArray(parsedAssets)) return [];
+    return parsedAssets
+      .map((asset) => normalizePhotoAsset(asset as Partial<PhotoAsset>))
+      .filter((asset): asset is PhotoAsset => Boolean(asset));
+  } catch {
+    return [];
+  }
+}
+
+function storePhotoAssets(assets: PhotoAsset[]) {
+  // TODO: Replace localStorage/base64 storage with backend PhotoAsset rows plus durable object storage.
+  window.localStorage.setItem(photoLibraryStorageKey, JSON.stringify(assets));
+}
+
+function createEmptyPhotoAssetDraft(): PhotoAssetDraft {
+  return {
+    image_url: null,
+    image_data: null,
+    image_filename: null,
+    title: '',
+    description: '',
+    category: 'Finished Project',
+    service_type: '',
+    location: '',
+    tagsText: '',
+    quality: 'standard',
+  };
+}
+
+function createPhotoAssetDraft(asset: PhotoAsset): PhotoAssetDraft {
+  return {
+    image_url: asset.image_url,
+    image_data: asset.image_data,
+    image_filename: asset.image_filename,
+    title: asset.title,
+    description: asset.description,
+    category: asset.category,
+    service_type: asset.service_type,
+    location: asset.location,
+    tagsText: asset.tags.join(', '),
+    quality: asset.quality,
+  };
+}
+
+function normalizePhotoTags(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getPhotoAssetImageSource(asset: PhotoAsset | PhotoAssetDraft) {
+  return asset.image_data || asset.image_url;
+}
+
+function getPhotoAssetQualityLabel(quality: PhotoAssetQuality) {
+  return photoAssetQualityOptions.find((option) => option.value === quality)?.label ?? 'Standard';
+}
+
+function formatPhotoAssetDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date);
+}
+
+function createPhotoAssetId() {
+  return `photo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Unable to read image file.'));
+      }
+    });
+    reader.addEventListener('error', () => reject(new Error('Unable to read image file.')));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(source: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener('load', () => resolve(image));
+    image.addEventListener('error', () => reject(new Error('Unable to preview this image file.')));
+    image.src = source;
+  });
+}
+
+async function fileToPhotoAssetImage(file: File) {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please choose an image file.');
+  }
+
+  const originalDataUrl = await readFileAsDataUrl(file);
+  let storedDataUrl = originalDataUrl;
+
+  try {
+    const image = await loadImageElement(originalDataUrl);
+    const maxDimension = 1600;
+    const scale = Math.min(1, maxDimension / image.width, maxDimension / image.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.84);
+      if (compressedDataUrl.length < storedDataUrl.length || storedDataUrl.length > maxPhotoAssetDataUrlLength) {
+        storedDataUrl = compressedDataUrl;
+      }
+    }
+  } catch {
+    storedDataUrl = originalDataUrl;
+  }
+
+  if (storedDataUrl.length > maxPhotoAssetDataUrlLength) {
+    throw new Error('This image is too large for the local Photo Library MVP. Use a smaller image for now.');
+  }
+
+  return {
+    image_data: storedDataUrl,
+    image_filename: file.name,
+  };
+}
+
+function selectPhotoAssetsForGeneratedPost(
+  assets: PhotoAsset[],
+  criteria: { category?: PhotoAssetCategory; serviceType?: string; tags?: string[] },
+) {
+  // TODO: Wire this selector into weekly post generation after PhotoAsset backend persistence exists.
+  const serviceType = criteria.serviceType?.trim().toLowerCase();
+  const requestedTags = new Set((criteria.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean));
+  return assets.filter((asset) => {
+    if (criteria.category && asset.category !== criteria.category) return false;
+    if (serviceType && asset.service_type.toLowerCase() !== serviceType) return false;
+    if (requestedTags.size > 0 && !asset.tags.some((tag) => requestedTags.has(tag.toLowerCase()))) return false;
+    return true;
+  });
 }
 
 function formatCampaignCopyPackage(item: CampaignContentQueueItem) {
@@ -565,8 +820,7 @@ function getContentItemDayIndex(item: CampaignContentQueueItem) {
   const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(dayOfMonth)));
   if (Number.isNaN(date.getTime())) return 0;
 
-  const day = date.getUTCDay();
-  return day === 0 ? 6 : day - 1;
+  return date.getUTCDay();
 }
 
 function getContentSlotTitle(items: CampaignContentQueueItem[]) {
@@ -788,12 +1042,21 @@ function formatUtcDateInputValue(date: Date) {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
 
-function getWeekdayDateInputValue(weekStartDate: string, dayIndex: number) {
-  const weekStart = parseDateInputAsUtc(weekStartDate) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
-  if (!weekStart) return getDefaultWeekStartDateInput();
+function getCalendarSundayStartDateInput(weekStartDate: string) {
+  const referenceDate = parseDateInputAsUtc(weekStartDate) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
+  if (!referenceDate) return getDefaultWeekStartDateInput();
 
-  const scheduledDate = new Date(weekStart);
-  scheduledDate.setUTCDate(weekStart.getUTCDate() + dayIndex);
+  const sundayDate = new Date(referenceDate);
+  sundayDate.setUTCDate(referenceDate.getUTCDate() - referenceDate.getUTCDay());
+  return formatUtcDateInputValue(sundayDate);
+}
+
+function getWeekdayDateInputValue(weekStartDate: string, dayIndex: number) {
+  const calendarStart = parseDateInputAsUtc(getCalendarSundayStartDateInput(weekStartDate));
+  if (!calendarStart) return getDefaultWeekStartDateInput();
+
+  const scheduledDate = new Date(calendarStart);
+  scheduledDate.setUTCDate(calendarStart.getUTCDate() + dayIndex);
   return formatUtcDateInputValue(scheduledDate);
 }
 
@@ -2242,80 +2505,78 @@ function App() {
           </div>
         ) : null}
 
-        {weeklyContentSlots.length > 0 ? (
-          <div className="weekly-calendar-grid" aria-label="Weekly content calendar">
-            {weeklyCalendarDays.map((day, dayIndex) => (
-              <details
-                className={`calendar-day-column ${
-                  calendarDrag?.overDayIndex === dayIndex && !calendarDrag.overTrash ? 'calendar-day-column-drop-target' : ''
-                }`}
-                data-calendar-day-index={dayIndex}
-                key={day.key}
-                open={isMobileCalendar ? undefined : true}
-              >
-                <summary className="calendar-day-heading">
-                  <span>{day.shortLabel}</span>
-                  <strong>{day.label}</strong>
-                  <em>{day.contentSlots.length}</em>
-                </summary>
-                {day.contentSlots.length > 0 ? (
-                  <div className="content-slot-list">
-                    {day.contentSlots.map((slot) => (
-                      <button
-                        aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
-                        className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
-                        key={slot.id}
-                        type="button"
-                        onClick={(event) => handleContentSlotClick(event, slot)}
-                        onPointerCancel={handleContentSlotPointerEnd}
-                        onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
-                        onPointerMove={handleContentSlotPointerMove}
-                        onPointerUp={handleContentSlotPointerEnd}
-                      >
-                        <div className="content-slot-media">
-                          {slot.imageSource ? (
-                            <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} />
-                          ) : (
-                            <span>No image</span>
-                          )}
+        <div className="weekly-calendar-grid" aria-label="Weekly content calendar">
+          {weeklyCalendarDays.map((day, dayIndex) => (
+            <details
+              className={`calendar-day-column ${
+                calendarDrag?.overDayIndex === dayIndex && !calendarDrag.overTrash ? 'calendar-day-column-drop-target' : ''
+              }`}
+              data-calendar-day-index={dayIndex}
+              key={day.key}
+              open={isMobileCalendar ? undefined : true}
+            >
+              <summary className="calendar-day-heading">
+                <span>{day.shortLabel}</span>
+                <strong>{day.label}</strong>
+                <em>{day.contentSlots.length}</em>
+              </summary>
+              {day.contentSlots.length > 0 ? (
+                <div className="content-slot-list">
+                  {day.contentSlots.map((slot) => (
+                    <button
+                      aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
+                      className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
+                      key={slot.id}
+                      type="button"
+                      onClick={(event) => handleContentSlotClick(event, slot)}
+                      onPointerCancel={handleContentSlotPointerEnd}
+                      onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
+                      onPointerMove={handleContentSlotPointerMove}
+                      onPointerUp={handleContentSlotPointerEnd}
+                    >
+                      <div className="content-slot-media">
+                        {slot.imageSource ? (
+                          <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} />
+                        ) : (
+                          <span>No image</span>
+                        )}
+                      </div>
+                      <div className="content-slot-body">
+                        <div className="content-slot-title-row">
+                          <h3>{slot.title}</h3>
+                          <span className="content-type-pill">{slot.contentType}</span>
                         </div>
-                        <div className="content-slot-body">
-                          <div className="content-slot-title-row">
-                            <h3>{slot.title}</h3>
-                            <span className="content-type-pill">{slot.contentType}</span>
-                          </div>
-                          <div className="content-slot-meta">
-                            <span>{slot.business}</span>
-                            <span>{formatDisplayDate(slot.scheduledAt)}</span>
-                          </div>
-                          <div className="platform-badge-row" aria-label="Generated platforms">
-                            {coreCalendarPlatforms.map((platform) => (
-                              <span
-                                className={`platform-badge ${
-                                  getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''
-                                }`}
-                                key={platform}
-                              >
-                                {platform === 'Google Business' ? 'Google' : platform}
-                              </span>
-                            ))}
-                          </div>
-                          <div className="content-slot-status">
-                            <span>{slot.statusSummary}</span>
-                            <span>{slot.platformPosts.length} platform posts</span>
-                          </div>
+                        <div className="content-slot-meta">
+                          <span>{slot.business}</span>
+                          <span>{formatDisplayDate(slot.scheduledAt)}</span>
                         </div>
-                        <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="calendar-empty-cell">No slots</div>
-                )}
-              </details>
-            ))}
-          </div>
-        ) : null}
+                        <div className="platform-badge-row" aria-label="Generated platforms">
+                          {coreCalendarPlatforms.map((platform) => (
+                            <span
+                              className={`platform-badge ${
+                                getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''
+                              }`}
+                              key={platform}
+                            >
+                              {platform === 'Google Business' ? 'Google' : platform}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="content-slot-status">
+                          <span>{slot.statusSummary}</span>
+                          <span>{slot.platformPosts.length} platform posts</span>
+                        </div>
+                      </div>
+                      <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="calendar-empty-cell">No slots</div>
+              )}
+            </details>
+          ))}
+        </div>
         {calendarDrag ? (
           <CalendarTrashDropZone active={calendarDrag.overTrash} />
         ) : null}
@@ -2418,7 +2679,9 @@ function App() {
         />
       ) : null}
 
-      {activeSection === 'photo-library' ? <PhotoLibraryPlaceholder /> : null}
+      {activeSection === 'photo-library' ? (
+        <PhotoLibrarySection businessName={businessProfile.business_name} serviceOptions={businessProfile.services_offered} />
+      ) : null}
 
       {activeSection === 'jobs-queues' ? (
       <>
@@ -3063,14 +3326,14 @@ function BusinessProfileSection({
             <span>Service area cities</span>
             <textarea
               value={formatProfileList(draft.service_area_cities)}
-              onChange={(event) => updateField('service_area_cities', parseProfileList(event.target.value))}
+              onChange={(event) => updateField('service_area_cities', parseEditableProfileList(event.target.value))}
             />
           </label>
           <label className="form-field form-field-wide">
             <span>Services offered</span>
             <textarea
               value={formatProfileList(draft.services_offered)}
-              onChange={(event) => updateField('services_offered', parseProfileList(event.target.value))}
+              onChange={(event) => updateField('services_offered', parseEditableProfileList(event.target.value))}
             />
           </label>
           <label className="form-field">
@@ -3147,22 +3410,466 @@ function BusinessProfileSection({
   );
 }
 
-function PhotoLibraryPlaceholder() {
+function PhotoLibrarySection({
+  businessName,
+  serviceOptions,
+}: {
+  businessName: string;
+  serviceOptions: string[];
+}) {
+  const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>(() => loadStoredPhotoAssets());
+  const [photoDraft, setPhotoDraft] = useState<PhotoAssetDraft>(() => createEmptyPhotoAssetDraft());
+  const [showPhotoAssetModal, setShowPhotoAssetModal] = useState(false);
+  const [editingPhotoAssetId, setEditingPhotoAssetId] = useState<string | null>(null);
+  const [pendingDeletePhotoAssetId, setPendingDeletePhotoAssetId] = useState<string | null>(null);
+  const [photoAssetBusyAction, setPhotoAssetBusyAction] = useState<'image' | 'save' | null>(null);
+  const [photoAssetError, setPhotoAssetError] = useState<string | null>(null);
+  const [photoAssetNotice, setPhotoAssetNotice] = useState<string | null>(null);
+
+  const sortedPhotoAssets = useMemo(() => {
+    return [...photoAssets].sort((a, b) => {
+      const qualityCompare =
+        photoAssetQualityOptions.findIndex((option) => option.value === b.quality) -
+        photoAssetQualityOptions.findIndex((option) => option.value === a.quality);
+      if (qualityCompare !== 0) return qualityCompare;
+      return b.updated_at.localeCompare(a.updated_at);
+    });
+  }, [photoAssets]);
+  const editingPhotoAsset = editingPhotoAssetId
+    ? photoAssets.find((asset) => asset.id === editingPhotoAssetId) ?? null
+    : null;
+  const pendingDeletePhotoAsset = pendingDeletePhotoAssetId
+    ? photoAssets.find((asset) => asset.id === pendingDeletePhotoAssetId) ?? null
+    : null;
+  const heroAssetCount = photoAssets.filter((asset) => asset.quality === 'hero').length;
+  const usedAssetCount = photoAssets.reduce((count, asset) => count + asset.used_count, 0);
+  const primaryService = serviceOptions[0]?.trim();
+  const futureGenerationMatches = primaryService
+    ? selectPhotoAssetsForGeneratedPost(photoAssets, {
+        serviceType: primaryService,
+      }).length
+    : 0;
+
+  function openAddPhotoModal() {
+    setPhotoDraft(createEmptyPhotoAssetDraft());
+    setEditingPhotoAssetId(null);
+    setShowPhotoAssetModal(true);
+    setPhotoAssetError(null);
+    setPhotoAssetNotice(null);
+  }
+
+  function openEditPhotoModal(asset: PhotoAsset) {
+    setPhotoDraft(createPhotoAssetDraft(asset));
+    setEditingPhotoAssetId(asset.id);
+    setShowPhotoAssetModal(true);
+    setPhotoAssetError(null);
+    setPhotoAssetNotice(null);
+  }
+
+  function closePhotoModal() {
+    setShowPhotoAssetModal(false);
+    setEditingPhotoAssetId(null);
+    setPhotoDraft(createEmptyPhotoAssetDraft());
+    setPhotoAssetError(null);
+  }
+
+  function updatePhotoDraft<Key extends keyof PhotoAssetDraft>(field: Key, value: PhotoAssetDraft[Key]) {
+    setPhotoDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function handlePhotoFileSelect(file: File | null) {
+    if (!file) return;
+
+    setPhotoAssetBusyAction('image');
+    setPhotoAssetError(null);
+    try {
+      const imagePayload = await fileToPhotoAssetImage(file);
+      setPhotoDraft((current) => ({
+        ...current,
+        image_data: imagePayload.image_data,
+        image_url: null,
+        image_filename: imagePayload.image_filename,
+        title: current.title || file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' '),
+      }));
+    } catch (err) {
+      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to load this image.');
+    } finally {
+      setPhotoAssetBusyAction(null);
+    }
+  }
+
+  function persistPhotoAssets(nextAssets: PhotoAsset[]) {
+    try {
+      storePhotoAssets(nextAssets);
+      setPhotoAssets(nextAssets);
+      return true;
+    } catch (err) {
+      setPhotoAssetError(
+        err instanceof Error
+          ? `Unable to save the Photo Library locally. ${err.message}`
+          : 'Unable to save the Photo Library locally.',
+      );
+      return false;
+    }
+  }
+
+  async function handleSavePhotoAsset() {
+    const title = photoDraft.title.trim();
+    if (!title) {
+      setPhotoAssetError('Photo title is required.');
+      return;
+    }
+    if (!getPhotoAssetImageSource(photoDraft)) {
+      setPhotoAssetError('Please upload an image for this photo asset.');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const existingAsset = editingPhotoAsset;
+    const savedAsset: PhotoAsset = {
+      id: existingAsset?.id ?? createPhotoAssetId(),
+      business_name: existingAsset?.business_name || businessName || defaultBusinessProfile.business_name,
+      image_url: photoDraft.image_url,
+      image_data: photoDraft.image_data,
+      image_filename: photoDraft.image_filename,
+      title,
+      description: photoDraft.description.trim(),
+      category: photoDraft.category,
+      service_type: photoDraft.service_type.trim(),
+      location: photoDraft.location.trim(),
+      tags: normalizePhotoTags(photoDraft.tagsText),
+      quality: photoDraft.quality,
+      used_count: existingAsset?.used_count ?? 0,
+      created_at: existingAsset?.created_at ?? now,
+      updated_at: now,
+    };
+    const nextAssets = existingAsset
+      ? photoAssets.map((asset) => (asset.id === existingAsset.id ? savedAsset : asset))
+      : [savedAsset, ...photoAssets];
+
+    setPhotoAssetBusyAction('save');
+    setPhotoAssetError(null);
+    if (persistPhotoAssets(nextAssets)) {
+      setPhotoAssetNotice(existingAsset ? 'Photo asset updated.' : 'Photo asset added to the library.');
+      closePhotoModal();
+    }
+    setPhotoAssetBusyAction(null);
+  }
+
+  function handleConfirmDeletePhotoAsset() {
+    if (!pendingDeletePhotoAsset) return;
+
+    const nextAssets = photoAssets.filter((asset) => asset.id !== pendingDeletePhotoAsset.id);
+    setPhotoAssetError(null);
+    if (persistPhotoAssets(nextAssets)) {
+      setPhotoAssetNotice('Photo asset deleted.');
+      setPendingDeletePhotoAssetId(null);
+    }
+  }
+
   return (
     <section className="panel photo-library-panel">
       <div className="panel-heading weekly-heading">
         <div>
           <h2>Photo Library</h2>
-          <p>Campaign image management will live here. Existing generated posts still use the current backend rotation.</p>
+          <p>Reusable project photos for local content planning. Generated posts still use the backend rotation for now.</p>
+        </div>
+        <div className="panel-heading-actions">
+          <button className="secondary-button" type="button" onClick={openAddPhotoModal}>
+            Add Photo
+          </button>
         </div>
       </div>
-      <div className="photo-library-placeholder">
-        <div>
-          <strong>Photo Library placeholder</strong>
-          <span>Upcoming tools: upload images, tag rooms/services, mark before/after pairs, and exclude photos from rotation.</span>
+
+      {photoAssetError ? (
+        <div className="photo-library-alert" role="alert">
+          {photoAssetError}
         </div>
+      ) : null}
+      {photoAssetNotice ? <div className="photo-library-notice">{photoAssetNotice}</div> : null}
+
+      <div className="photo-library-summary" aria-label="Photo library summary">
+        <span>
+          <strong>{photoAssets.length}</strong>
+          Assets
+        </span>
+        <span>
+          <strong>{heroAssetCount}</strong>
+          Hero
+        </span>
+        <span>
+          <strong>{usedAssetCount}</strong>
+          Uses
+        </span>
+        <span>
+          <strong>{futureGenerationMatches}</strong>
+          Match primary service
+        </span>
       </div>
+
+      {sortedPhotoAssets.length > 0 ? (
+        <div className="photo-library-grid">
+          {sortedPhotoAssets.map((asset) => {
+            const imageSource = getPhotoAssetImageSource(asset);
+            return (
+              <article className="photo-asset-card" key={asset.id}>
+                <div className="photo-asset-preview">
+                  {imageSource ? <img alt={asset.title} src={imageSource} /> : <span>No image</span>}
+                  <span className={`photo-quality-badge photo-quality-${asset.quality}`}>
+                    {getPhotoAssetQualityLabel(asset.quality)}
+                  </span>
+                </div>
+                <div className="photo-asset-body">
+                  <div className="photo-asset-title-row">
+                    <div>
+                      <h3>{asset.title}</h3>
+                      <span>{asset.category}</span>
+                    </div>
+                    <em>{asset.used_count} used</em>
+                  </div>
+                  {asset.description ? <p>{asset.description}</p> : null}
+                  <div className="photo-asset-meta">
+                    {asset.service_type ? <span>{asset.service_type}</span> : null}
+                    {asset.location ? <span>{asset.location}</span> : null}
+                    <span>Updated {formatPhotoAssetDate(asset.updated_at)}</span>
+                  </div>
+                  {asset.tags.length > 0 ? (
+                    <div className="photo-tag-row" aria-label="Photo tags">
+                      {asset.tags.map((tag) => (
+                        <span key={`${asset.id}:${tag}`}>{tag}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="photo-asset-actions">
+                    <button type="button" onClick={() => openEditPhotoModal(asset)}>
+                      Edit
+                    </button>
+                    <button className="danger-button" type="button" onClick={() => setPendingDeletePhotoAssetId(asset.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="photo-library-empty">
+          <strong>Upload project photos to give Gomez Ops reusable assets for generated posts.</strong>
+          <span>Add finished projects, before/after shots, work-in-progress photos, and team photos with service tags.</span>
+          <button className="secondary-button" type="button" onClick={openAddPhotoModal}>
+            Upload Photo
+          </button>
+        </div>
+      )}
+
+      {showPhotoAssetModal ? (
+        <PhotoAssetModal
+          busyAction={photoAssetBusyAction}
+          draft={photoDraft}
+          editing={Boolean(editingPhotoAsset)}
+          error={photoAssetError}
+          serviceOptions={serviceOptions}
+          onCancel={closePhotoModal}
+          onChange={updatePhotoDraft}
+          onFileSelect={handlePhotoFileSelect}
+          onSave={() => void handleSavePhotoAsset()}
+        />
+      ) : null}
+      {pendingDeletePhotoAsset ? (
+        <DeletePhotoAssetConfirmModal
+          asset={pendingDeletePhotoAsset}
+          onCancel={() => setPendingDeletePhotoAssetId(null)}
+          onConfirm={handleConfirmDeletePhotoAsset}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function PhotoAssetModal({
+  busyAction,
+  draft,
+  editing,
+  error,
+  serviceOptions,
+  onCancel,
+  onChange,
+  onFileSelect,
+  onSave,
+}: {
+  busyAction: 'image' | 'save' | null;
+  draft: PhotoAssetDraft;
+  editing: boolean;
+  error: string | null;
+  serviceOptions: string[];
+  onCancel: () => void;
+  onChange: <Key extends keyof PhotoAssetDraft>(field: Key, value: PhotoAssetDraft[Key]) => void;
+  onFileSelect: (file: File | null) => Promise<void>;
+  onSave: () => void;
+}) {
+  const imageSource = getPhotoAssetImageSource(draft);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel photo-asset-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="photo-asset-modal-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="photo-asset-modal-title">{editing ? 'Edit Photo Asset' : 'Add Photo Asset'}</h2>
+            <p>Store reusable photo context for future post generation and campaign planning.</p>
+          </div>
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+        {error ? (
+          <div className="photo-asset-modal-error" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        <form
+          className="photo-asset-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave();
+          }}
+        >
+          <div className="photo-upload-preview">
+            {imageSource ? <img alt={draft.title || 'Selected photo asset'} src={imageSource} /> : <span>No image selected</span>}
+          </div>
+          <div className="photo-asset-fields">
+            <label className="form-field form-field-wide">
+              <span>Image file</span>
+              <input
+                accept="image/*"
+                type="file"
+                onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
+              />
+              <small>
+                {busyAction === 'image'
+                  ? 'Preparing image preview...'
+                  : editing
+                    ? 'Current image is retained unless a new file is selected.'
+                    : 'Upload a project photo to save it in the local library.'}
+              </small>
+            </label>
+            <label className="form-field">
+              <span>Title</span>
+              <input value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>Category</span>
+              <select value={draft.category} onChange={(event) => onChange('category', event.target.value as PhotoAssetCategory)}>
+                {photoAssetCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-field">
+              <span>Service type</span>
+              <input
+                list="photo-service-options"
+                value={draft.service_type}
+                onChange={(event) => onChange('service_type', event.target.value)}
+              />
+              <datalist id="photo-service-options">
+                {serviceOptions.map((service) => (
+                  <option key={service} value={service} />
+                ))}
+              </datalist>
+            </label>
+            <label className="form-field">
+              <span>Location / city</span>
+              <input value={draft.location} onChange={(event) => onChange('location', event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>Quality / usefulness</span>
+              <select value={draft.quality} onChange={(event) => onChange('quality', event.target.value as PhotoAssetQuality)}>
+                {photoAssetQualityOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Tags</span>
+              <input
+                placeholder="kitchen, neutral colors, oak park"
+                value={draft.tagsText}
+                onChange={(event) => onChange('tagsText', event.target.value)}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Description / context</span>
+              <textarea
+                value={draft.description}
+                onChange={(event) => onChange('description', event.target.value)}
+                placeholder="What makes this photo useful for future posts?"
+              />
+            </label>
+          </div>
+        </form>
+
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="secondary-button" disabled={busyAction !== null} type="button" onClick={onSave}>
+            {busyAction === 'save' ? 'Saving...' : 'Save Photo'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DeletePhotoAssetConfirmModal({
+  asset,
+  onCancel,
+  onConfirm,
+}: {
+  asset: PhotoAsset;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel delete-confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-photo-asset-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="delete-photo-asset-title">Delete this photo?</h2>
+            <p>{asset.title}</p>
+          </div>
+        </div>
+        <p className="delete-confirm-message">
+          This will remove the photo asset from the local Photo Library. Generated posts that already reference images are not changed.
+        </p>
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="danger-button" type="button" onClick={onConfirm}>
+            Delete Photo
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
