@@ -13,6 +13,7 @@ from app.api.routes_jobs import router as jobs_router
 from app.api.routes_photo_assets import router as photo_assets_router
 from app.api.routes_publisher import router as publisher_router
 from app.api.routes_posts import router as posts_router
+from app.api.routes_visibility import router as visibility_router
 from app.config import settings
 
 
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(photo_assets_router)
     app.include_router(posts_router)
     app.include_router(publisher_router)
+    app.include_router(visibility_router)
     media_campaigns_dir = Path(__file__).resolve().parents[1] / "media" / "campaigns"
     media_campaigns_dir.mkdir(parents=True, exist_ok=True)
     media_photo_assets_dir = Path(__file__).resolve().parents[1] / "media" / "photo-assets"

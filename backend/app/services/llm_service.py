@@ -8,6 +8,7 @@ from app.models.campaign import Campaign
 from app.models.campaign_content import CampaignDraftSet
 from app.models.completed_job import CompletedJob
 from app.models.content_draft import ContentDraft
+from app.models.visibility import VisibilityGenerationRequest, VisibilityGenerationResponse
 
 
 class LLMServiceError(RuntimeError):
@@ -55,6 +56,82 @@ class LLMService:
             )
 
         raise LLMServiceError(f"Unsupported LLM_PROVIDER: {self.settings.llm_provider}")
+
+    def generate_visibility_output(
+        self,
+        request: VisibilityGenerationRequest,
+        system_prompt: str,
+    ) -> VisibilityGenerationResponse:
+        provider = self.settings.llm_provider.strip().lower()
+        if provider == "placeholder":
+            return self.generate_visibility_fallback(request)
+        if provider == "openai":
+            return self._generate_openai_visibility_output(request=request, system_prompt=system_prompt)
+
+        raise LLMServiceError(f"Unsupported LLM_PROVIDER: {self.settings.llm_provider}")
+
+    def generate_visibility_fallback(self, request: VisibilityGenerationRequest) -> VisibilityGenerationResponse:
+        profile = request.business_profile
+        business_name = (profile.business_name if profile else "Marom Painting").strip() or "Marom Painting"
+        website = (profile.website_url if profile and profile.website_url else "").strip()
+        primary_cta = (profile.primary_cta if profile and profile.primary_cta else "Request a free estimate").strip()
+        service = request.service_focus or self._first_non_empty(profile.services_offered if profile else [], "painting services")
+        location = request.location or self._first_non_empty(profile.service_area_cities if profile else [], "the local area")
+        cta_line = self._visibility_cta_line(request.cta or primary_cta, website, request.contact)
+
+        if request.tool_type == "craigslist_service_ad":
+            return self._generate_visibility_craigslist_fallback(
+                request=request,
+                business_name=business_name,
+                service=service,
+                location=location,
+                cta_line=cta_line,
+            )
+
+        if request.tool_type == "review_request":
+            customer_name = request.customer_name or "there"
+            job_completed = request.job_completed or service
+            review_link = request.review_link or website
+            primary = (
+                f"Hi {customer_name}, thank you again for choosing {business_name} for {job_completed}. "
+                "If you have a minute, would you be willing to leave us a Google review? "
+                "It helps local homeowners feel confident reaching out."
+            )
+            if review_link:
+                primary = f"{primary} {review_link}"
+            return VisibilityGenerationResponse(
+                primary=primary,
+                shortVersion=f"Hi {customer_name}, thanks again for choosing {business_name}. A quick Google review would mean a lot. {review_link}".strip(),
+                ctaLine=review_link or cta_line,
+                titles=["Review request message"],
+                hashtagsOrKeywords=["Google review", business_name, location],
+                generationMode="fallback",
+            )
+
+        if request.tool_type == "business_intro_post":
+            services = request.services_to_mention or ", ".join((profile.services_offered if profile else [])[:3]) or service
+            background = request.business_background or (profile.brand_tone if profile and profile.brand_tone else "Local, reliable, and focused on clean work")
+            primary = (
+                f"Hey neighbors - we are {business_name}, a local {profile.industry.lower() if profile and profile.industry else 'home services'} "
+                f"business serving {location}. We help with {services}. {background}. "
+                f"If you are planning a project nearby, {cta_line}."
+            )
+            return VisibilityGenerationResponse(
+                primary=primary,
+                shortVersion=f"Hey neighbors - {business_name} helps with {services} around {location}. {cta_line}.",
+                ctaLine=cta_line,
+                titles=[f"{business_name} in {location}", f"Local help for {services}"],
+                hashtagsOrKeywords=[business_name, location, service],
+                generationMode="fallback",
+            )
+
+        return self._generate_visibility_local_reach_fallback(
+            request=request,
+            business_name=business_name,
+            service=service,
+            location=location,
+            cta_line=cta_line,
+        )
 
     def _generate_placeholder_content_draft(self, job: CompletedJob) -> ContentDraft:
         photo_line = "Photos are available for the team to review." if job.photos_uploaded else "No photos are attached yet."
@@ -129,6 +206,177 @@ class LLMService:
             confidence=0.82,
             needs_human_review=True,
         )
+
+    def _generate_visibility_local_reach_fallback(
+        self,
+        request: VisibilityGenerationRequest,
+        business_name: str,
+        service: str,
+        location: str,
+        cta_line: str,
+    ) -> VisibilityGenerationResponse:
+        destination = request.destination or "General Social Post"
+        post_type = request.post_type or "Service promotion"
+        goal = request.goal or "Get estimate requests"
+        tone = request.tone or "Friendly neighbor"
+        photo_line = self._visibility_photo_line(request.photo_asset)
+        note_line = f" {request.notes.rstrip('.')}." if request.notes else ""
+        hook = self._visibility_hook(destination, post_type, tone, service, location)
+
+        if destination == "Google Business Profile":
+            body = (
+                f"{business_name} helps homeowners in {location} with {service.lower()} and related painting needs. "
+                "Expect clear estimates, careful prep, and clean work."
+            )
+        elif destination in {"Facebook Group", "Neighborhood Group"}:
+            body = (
+                f"No hard sell - just local help from {business_name} if anyone nearby is thinking about "
+                f"{service.lower()}. Happy to answer questions or take a look."
+            )
+        elif destination == "Craigslist":
+            body = (
+                f"{business_name} offers reliable {service.lower()} in {location}. Clear estimates, clean work areas, "
+                "and service for local homeowners."
+            )
+        else:
+            body = (
+                f"{business_name} works with local homeowners around {location} on {service.lower()}. "
+                "The focus is simple communication, careful prep, and a finish that fits the home."
+            )
+
+        if goal == "Improve local search visibility" and destination == "Google Business Profile":
+            body = f"{body} Serving {location} and nearby communities."
+        if photo_line:
+            body = f"{body} {photo_line}"
+        body = f"{body}{note_line}"
+
+        primary = f"{hook} {body}\n\n{cta_line}"
+        short_version = f"{business_name} can help with {service.lower()} in {location}. {cta_line}"
+        if destination in {"Facebook Group", "Neighborhood Group"}:
+            short_version = f"Hey neighbors - {business_name} helps with {service.lower()} around {location}. Happy to take a look."
+
+        return VisibilityGenerationResponse(
+            primary=primary,
+            shortVersion=short_version,
+            ctaLine=cta_line,
+            titles=[
+                f"{service} in {location}",
+                f"Local {service.lower()} help",
+                f"{business_name} - {location}",
+            ],
+            hashtagsOrKeywords=self._visibility_keywords(destination, business_name, service, location),
+            imageSuggestions=self._visibility_image_suggestions([request.photo_asset] if request.photo_asset else []),
+            generationMode="fallback",
+        )
+
+    def _generate_visibility_craigslist_fallback(
+        self,
+        request: VisibilityGenerationRequest,
+        business_name: str,
+        service: str,
+        location: str,
+        cta_line: str,
+    ) -> VisibilityGenerationResponse:
+        pain_point = request.customer_pain_point or "walls, trim, cabinets, or exterior areas that need a cleaner finish"
+        trust_signals = request.trust_signals or "clear estimates, careful prep, clean work areas, and local service"
+        offer = f"\n\nOffer/details: {request.offer_details}" if request.offer_details else ""
+        notes = f"\n\nAdditional context: {request.notes}" if request.notes else ""
+        services = [service, "Interior painting", "Exterior painting", "Cabinet painting", "Drywall repair"]
+        unique_services = list(dict.fromkeys(item for item in services if item))
+        image_suggestions = self._visibility_image_suggestions(request.photo_assets)
+
+        primary = (
+            f"{business_name} - {service} in {location}\n\n"
+            f"If you are dealing with {pain_point}, {business_name} can help with reliable {service.lower()} "
+            f"for homeowners in {location} and nearby areas.\n\n"
+            f"Services:\n- " + "\n- ".join(unique_services) + "\n\n"
+            f"Why choose us:\n{trust_signals}\n\n"
+            f"CTA:\n{cta_line}"
+            f"{offer}{notes}"
+        )
+        if image_suggestions:
+            primary = f"{primary}\n\nRecommended image order:\n- " + "\n- ".join(image_suggestions)
+
+        return VisibilityGenerationResponse(
+            primary=primary,
+            shortVersion=f"{service} in {location}. {business_name} offers clear estimates and clean local painting work. {cta_line}",
+            ctaLine=cta_line,
+            titles=[
+                f"{service} in {location} - Free Estimate",
+                f"Local {service} by {business_name}",
+                f"Reliable Painting Help in {location}",
+                f"{location} Home Painting Services",
+            ],
+            hashtagsOrKeywords=[
+                f"{service} {location}",
+                f"{location} painting services",
+                "residential painting",
+                "free painting estimate",
+                business_name,
+            ],
+            imageSuggestions=image_suggestions,
+            generationMode="fallback",
+        )
+
+    @staticmethod
+    def _first_non_empty(values: list[str], fallback: str) -> str:
+        for value in values:
+            if value.strip():
+                return value.strip()
+        return fallback
+
+    @staticmethod
+    def _visibility_cta_line(cta: str, website: str, contact: str = "") -> str:
+        contact_value = contact.strip() or website.strip()
+        return f"{cta.strip()}: {contact_value}" if contact_value else cta.strip()
+
+    @staticmethod
+    def _visibility_hook(destination: str, post_type: str, tone: str, service: str, location: str) -> str:
+        if destination in {"Facebook Group", "Neighborhood Group"}:
+            if post_type == "Recent project":
+                return f"Hey neighbors - we recently wrapped up a {service.lower()} project near {location}."
+            if post_type == "Educational tip":
+                return f"Hey neighbors - quick tip for anyone in {location} thinking about {service.lower()}."
+            return f"Hey neighbors - if {service.lower()} is on your list, we are helping homeowners around {location}."
+        if destination == "Craigslist":
+            return f"{service} available in {location}."
+        if destination == "Google Business Profile":
+            return f"{service} for homeowners in {location}."
+        if tone == "Premium":
+            return f"A clean, polished {service.lower()} project can change how a home feels in {location}."
+        return f"Thinking about {service.lower()} in {location}?"
+
+    @staticmethod
+    def _visibility_photo_line(photo_asset: object | None) -> str:
+        if photo_asset is None:
+            return ""
+        title = getattr(photo_asset, "title", "")
+        service_type = getattr(photo_asset, "service_type", "")
+        location = getattr(photo_asset, "location", "")
+        details = ", ".join(item for item in [service_type, location] if item)
+        if title and details:
+            return f"Selected photo context: {title} ({details})."
+        if title:
+            return f"Selected photo context: {title}."
+        return ""
+
+    @staticmethod
+    def _visibility_keywords(destination: str, business_name: str, service: str, location: str) -> list[str]:
+        keywords = [f"{service} {location}", business_name, f"{location} painting contractor"]
+        if destination in {"Facebook Group", "Neighborhood Group", "General Social Post"}:
+            keywords.extend([f"#{service.replace(' ', '')}", f"#{location.replace(' ', '')}", "#LocalBusiness"])
+        return keywords
+
+    @staticmethod
+    def _visibility_image_suggestions(photo_assets: list[object | None]) -> list[str]:
+        suggestions: list[str] = []
+        for index, asset in enumerate([asset for asset in photo_assets if asset is not None][:6], start=1):
+            title = getattr(asset, "title", "")
+            category = getattr(asset, "category", "")
+            service_type = getattr(asset, "service_type", "")
+            caption_parts = [part for part in [title, category, service_type] if part]
+            suggestions.append(f"{index}. {' - '.join(caption_parts) if caption_parts else 'Project photo'}")
+        return suggestions
 
     @staticmethod
     def _business_hashtag(business_name: str) -> str:
@@ -294,6 +542,49 @@ class LLMService:
             raise LLMServiceError("OpenAI response could not be parsed into CampaignDraftSet.") from exc
 
         return draft_set.model_copy(update={"needs_human_review": True})
+
+    def _generate_openai_visibility_output(
+        self,
+        request: VisibilityGenerationRequest,
+        system_prompt: str,
+    ) -> VisibilityGenerationResponse:
+        generation_context = request.model_dump(by_alias=True, exclude_none=True)
+
+        try:
+            response = self._get_openai_client().responses.parse(
+                model=self.settings.openai_model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"{system_prompt}\n\n"
+                            "Return only a VisibilityGenerationResponse JSON object. "
+                            "Use generationMode=\"llm\". "
+                            "Do not include fake claims, guarantees, or unsupported urgency."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(generation_context),
+                    },
+                ],
+                text_format=VisibilityGenerationResponse,
+            )
+        except LLMServiceError:
+            raise
+        except Exception as exc:
+            raise LLMServiceError("OpenAI visibility generation failed.") from exc
+
+        parsed = getattr(response, "output_parsed", None)
+        if parsed is None:
+            raise LLMServiceError("OpenAI response did not include parsed VisibilityGenerationResponse output.")
+
+        try:
+            generated = VisibilityGenerationResponse.model_validate(parsed)
+        except ValidationError as exc:
+            raise LLMServiceError("OpenAI response could not be parsed into VisibilityGenerationResponse.") from exc
+
+        return generated.model_copy(update={"generation_mode": "llm"})
 
     def _get_openai_client(self) -> Any:
         if self._client is not None:

@@ -143,6 +143,60 @@ export type BusinessProfile = {
   target_customer: string;
   primary_cta: string;
   platforms_used: Array<'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups'>;
+  visibility_channels?: Array<
+    'Google Business Profile' | 'Facebook Groups' | 'Craigslist' | 'Neighborhood Groups' | 'General Social Post'
+  >;
+};
+
+export type VisibilityGenerationMode = 'llm' | 'fallback';
+
+export type VisibilityPhotoAssetMetadata = {
+  id?: string | null;
+  title?: string;
+  description?: string;
+  category?: string;
+  service_type?: string;
+  location?: string;
+  tags?: string[];
+  quality?: string;
+  image_filename?: string | null;
+  image_path?: string | null;
+  image_url?: string | null;
+};
+
+export type VisibilityGenerationRequest = {
+  toolType: 'local_reach_post' | 'review_request' | 'business_intro_post' | 'craigslist_service_ad';
+  destination?: string | null;
+  postType?: string | null;
+  businessProfile?: BusinessProfile | null;
+  serviceFocus?: string;
+  location?: string;
+  goal?: string;
+  tone?: string;
+  cta?: string;
+  notes?: string;
+  customerName?: string;
+  jobCompleted?: string;
+  reviewLink?: string;
+  servicesToMention?: string;
+  businessBackground?: string;
+  offerDetails?: string;
+  customerPainPoint?: string;
+  trustSignals?: string;
+  contact?: string;
+  photoAsset?: VisibilityPhotoAssetMetadata | null;
+  photoAssets?: VisibilityPhotoAssetMetadata[];
+  outputFormat?: string;
+};
+
+export type VisibilityGenerationResponse = {
+  primary?: string;
+  shortVersion?: string;
+  ctaLine?: string;
+  titles?: string[];
+  hashtagsOrKeywords?: string[];
+  imageSuggestions?: string[];
+  generationMode?: VisibilityGenerationMode;
 };
 
 export type PhotoAssetQuality = 'standard' | 'strong' | 'hero';

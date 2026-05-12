@@ -15,6 +15,7 @@ import {
   generateAndSave,
   generateAndSaveCampaign,
   generateManualSocialPost,
+  generateVisibilityContent,
   generateWeeklySocialPosts,
   getCampaignContentQueue,
   getCampaigns,
@@ -53,6 +54,8 @@ import type {
   PhotoAssetCategory,
   PhotoAssetPayload,
   PhotoAssetQuality,
+  VisibilityGenerationResponse,
+  VisibilityPhotoAssetMetadata,
 } from './types';
 
 type BusyAction = string | null;
@@ -63,7 +66,8 @@ type AppSection = 'calendar' | 'visibility-tools' | 'business-profile' | 'photo-
 type VisibilityToolId =
   | 'local-reach-post'
   | 'review-request'
-  | 'business-intro-post';
+  | 'business-intro-post'
+  | 'craigslist-service-ad';
 type LocalReachDestination =
   | 'Google Business Profile'
   | 'Facebook Group'
@@ -85,6 +89,12 @@ type LocalReachGoal =
   | 'Announce availability'
   | 'Improve local search visibility';
 type LocalReachTone = 'Professional' | 'Friendly neighbor' | 'Simple/direct' | 'Premium' | 'Casual';
+type VisibilityChannel =
+  | 'Google Business Profile'
+  | 'Facebook Groups'
+  | 'Craigslist'
+  | 'Neighborhood Groups'
+  | 'General Social Post';
 
 type PhotoAssetDraft = {
   image_url: string | null;
@@ -147,6 +157,11 @@ type VisibilityToolFormData = {
   reviewLink: string;
   servicesToMention: string;
   businessBackground: string;
+  offerDetails: string;
+  customerPainPoint: string;
+  trustSignals: string;
+  contact: string;
+  selectedPhotoAssetIds: string[];
 };
 
 type QueueGroup = {
@@ -338,6 +353,19 @@ const businessProfilePlatforms: BusinessProfile['platforms_used'] = [
   'Facebook Groups',
 ];
 const defaultBusinessProfilePlatforms: BusinessProfile['platforms_used'] = ['Facebook', 'Instagram', 'Google Business'];
+const visibilityChannelOptions: VisibilityChannel[] = [
+  'Google Business Profile',
+  'Facebook Groups',
+  'Craigslist',
+  'Neighborhood Groups',
+  'General Social Post',
+];
+const defaultVisibilityChannels: VisibilityChannel[] = [
+  'Google Business Profile',
+  'Facebook Groups',
+  'Neighborhood Groups',
+  'General Social Post',
+];
 
 const photoAssetCategories: PhotoAssetCategory[] = [
   'Before',
@@ -375,6 +403,7 @@ const defaultBusinessProfile: BusinessProfile = {
   target_customer: 'Homeowners and property managers who want clean, reliable painting work',
   primary_cta: 'Request a free estimate',
   platforms_used: [...defaultBusinessProfilePlatforms],
+  visibility_channels: [...defaultVisibilityChannels],
 };
 
 const appNavItems: AppNavItem[] = [
@@ -404,6 +433,12 @@ const visibilityToolCards: VisibilityToolCard[] = [
     title: 'Business Intro Post',
     description: 'Generate a local "hey neighbors" introduction post for a new business or new service area.',
     label: 'Local intro',
+  },
+  {
+    id: 'craigslist-service-ad',
+    title: 'Craigslist Service Ad',
+    description: 'Generate a longer service ad with titles, body copy, service list, trust section, CTA, photos, and local keywords.',
+    label: 'Craigslist',
   },
 ];
 
@@ -568,9 +603,10 @@ function createDefaultVisibilityToolFormData(
   const defaultService = firstProfileValue(profile.services_offered, 'Interior painting');
   const defaultLocation = firstProfileValue(profile.service_area_cities, 'Oak Park');
   const defaultCta = profile.primary_cta.trim() || 'Request a free estimate';
+  const defaultDestination = destinationFromVisibilityChannel(visibilityChannelsFromProfile(profile)[0] ?? 'Google Business Profile');
 
   return {
-    destination: 'Google Business Profile',
+    destination: defaultDestination,
     postType: 'Service promotion',
     goal: 'Get estimate requests',
     serviceFocus: defaultService,
@@ -585,6 +621,11 @@ function createDefaultVisibilityToolFormData(
     servicesToMention: profile.services_offered.slice(0, 3).join(', ') || defaultService,
     businessBackground:
       profile.brand_tone.trim() || 'Local, reliable, and focused on clean, professional work.',
+    offerDetails: '',
+    customerPainPoint: '',
+    trustSignals: 'Clean prep, clear estimates, local references, and tidy work areas',
+    contact: profile.phone_number.trim() || profile.website_url.trim(),
+    selectedPhotoAssetIds: [],
   };
 }
 
@@ -594,7 +635,26 @@ function getVisibilityToolById(toolId: VisibilityToolId | null) {
 }
 
 function visibilityToolSupportsPhoto(toolId: VisibilityToolId) {
-  return toolId === 'local-reach-post';
+  return toolId === 'local-reach-post' || toolId === 'craigslist-service-ad';
+}
+
+function destinationFromVisibilityChannel(channel: VisibilityChannel): LocalReachDestination {
+  if (channel === 'Facebook Groups') return 'Facebook Group';
+  if (channel === 'Neighborhood Groups') return 'Neighborhood Group';
+  return channel;
+}
+
+function visibilityChannelFromDestination(destination: LocalReachDestination): VisibilityChannel {
+  if (destination === 'Facebook Group') return 'Facebook Groups';
+  if (destination === 'Neighborhood Group') return 'Neighborhood Groups';
+  return destination;
+}
+
+function visibilityChannelsFromProfile(profile: BusinessProfile): VisibilityChannel[] {
+  const channels = (profile.visibility_channels ?? defaultVisibilityChannels).filter((channel): channel is VisibilityChannel =>
+    visibilityChannelOptions.includes(channel as VisibilityChannel),
+  );
+  return channels.length > 0 ? channels : [...defaultVisibilityChannels];
 }
 
 function cleanSentencePart(value: string) {
@@ -823,7 +883,73 @@ function buildVisibilityToolOutput(
     return `Hey neighbors - we are ${businessName}, a local ${profile.industry.toLowerCase()} business serving ${location}. We help with ${services}. ${background}. If you are planning a project nearby, ${ctaLine}.`;
   }
 
+  if (toolId === 'craigslist-service-ad') {
+    const services = [service, 'Interior painting', 'Exterior painting', 'Cabinet painting', 'Drywall repair'];
+    const uniqueServices = Array.from(new Set(services.filter(Boolean)));
+    const contact = formData.contact || profile.website_url || profile.phone_number;
+    return [
+      `Primary post:`,
+      `${businessName} - ${service} in ${location}`,
+      '',
+      `If you are dealing with ${formData.customerPainPoint || 'paint that looks tired, damaged, or overdue for a refresh'}, ${businessName} can help with reliable ${service.toLowerCase()} in ${location}.`,
+      '',
+      'Services:',
+      ...uniqueServices.map((item) => `- ${item}`),
+      '',
+      'Why choose us:',
+      formData.trustSignals || 'Clear estimates, careful prep, clean work areas, and local service.',
+      '',
+      'CTA:',
+      contact ? `${formData.cta || profile.primary_cta}: ${contact}` : ctaLine,
+      '',
+      'Short version:',
+      `${service} in ${location}. Clean work, clear estimates, local service. ${contact ? `${formData.cta || profile.primary_cta}: ${contact}` : ctaLine}`,
+      '',
+      'Suggested local keywords or hashtags:',
+      `${service} ${location}, ${location} painting services, residential painting, free painting estimate`,
+    ].join('\n');
+  }
+
   return '';
+}
+
+function photoAssetToVisibilityMetadata(asset: PhotoAsset): VisibilityPhotoAssetMetadata {
+  return {
+    id: asset.id,
+    title: asset.title,
+    description: asset.description,
+    category: asset.category,
+    service_type: asset.service_type,
+    location: asset.location,
+    tags: asset.tags,
+    quality: asset.quality,
+    image_filename: asset.image_filename,
+    image_path: asset.image_path,
+    image_url: asset.image_url,
+  };
+}
+
+function fallbackVisibilityResponseFromText(text: string): VisibilityGenerationResponse {
+  return {
+    primary: text,
+    generationMode: 'fallback',
+  };
+}
+
+function formatVisibilityResponseForCopy(output: VisibilityGenerationResponse | null) {
+  if (!output) return '';
+  const lines: string[] = [];
+  if (output.primary) lines.push('Primary:', output.primary);
+  if (output.shortVersion) lines.push('', 'Short version:', output.shortVersion);
+  if (output.ctaLine) lines.push('', 'CTA:', output.ctaLine);
+  if (output.titles?.length) lines.push('', 'Titles:', ...output.titles.map((title) => `- ${title}`));
+  if (output.hashtagsOrKeywords?.length) {
+    lines.push('', 'Keywords / hashtags:', ...output.hashtagsOrKeywords.map((keyword) => `- ${keyword}`));
+  }
+  if (output.imageSuggestions?.length) {
+    lines.push('', 'Image suggestions:', ...output.imageSuggestions.map((suggestion) => `- ${suggestion}`));
+  }
+  return lines.join('\n');
 }
 
 function parseEditableProfileList(value: string) {
@@ -838,6 +964,9 @@ function normalizeBusinessProfile(profile: Partial<BusinessProfile> | null | und
   const platforms = (profile?.platforms_used ?? defaultBusinessProfile.platforms_used).filter((platform) =>
     businessProfilePlatforms.includes(platform),
   );
+  const visibilityChannels = (
+    profile?.visibility_channels ?? defaultBusinessProfile.visibility_channels ?? defaultVisibilityChannels
+  ).filter((channel): channel is VisibilityChannel => visibilityChannelOptions.includes(channel as VisibilityChannel));
 
   return {
     business_name: profile?.business_name?.trim() || defaultBusinessProfile.business_name,
@@ -855,6 +984,10 @@ function normalizeBusinessProfile(profile: Partial<BusinessProfile> | null | und
     target_customer: profile?.target_customer?.trim() || defaultBusinessProfile.target_customer,
     primary_cta: profile?.primary_cta?.trim() || defaultBusinessProfile.primary_cta,
     platforms_used: platforms.length > 0 ? platforms : [...defaultBusinessProfile.platforms_used],
+    visibility_channels:
+      visibilityChannels.length > 0
+        ? visibilityChannels
+        : [...(defaultBusinessProfile.visibility_channels ?? defaultVisibilityChannels)],
   };
 }
 
@@ -1884,7 +2017,7 @@ function App() {
   const [visibilityToolFormData, setVisibilityToolFormData] = useState<VisibilityToolFormData>(() =>
     createDefaultVisibilityToolFormData('local-reach-post', loadStoredBusinessProfile()),
   );
-  const [visibilityToolOutput, setVisibilityToolOutput] = useState('');
+  const [visibilityToolOutput, setVisibilityToolOutput] = useState<VisibilityGenerationResponse | null>(null);
   const [visibilityToolError, setVisibilityToolError] = useState<string | null>(null);
   const [visibilityToolGenerating, setVisibilityToolGenerating] = useState(false);
   const [visibilityToolCopied, setVisibilityToolCopied] = useState(false);
@@ -2209,20 +2342,20 @@ function App() {
   function openVisibilityTool(toolId: VisibilityToolId) {
     setSelectedVisibilityToolId(toolId);
     setVisibilityToolFormData(createDefaultVisibilityToolFormData(toolId, businessProfile));
-    setVisibilityToolOutput('');
+    setVisibilityToolOutput(null);
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
   }
 
   function closeVisibilityTool() {
     setSelectedVisibilityToolId(null);
-    setVisibilityToolOutput('');
+    setVisibilityToolOutput(null);
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
     setVisibilityToolGenerating(false);
   }
 
-  function updateVisibilityToolFormData(field: keyof VisibilityToolFormData, value: string) {
+  function updateVisibilityToolFormData(field: keyof VisibilityToolFormData, value: string | string[]) {
     setVisibilityToolFormData((current) => ({
       ...current,
       [field]: value,
@@ -2238,18 +2371,58 @@ function App() {
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
 
+    const selectedAsset =
+      photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+    const selectedAssets = photoAssets.filter((asset) =>
+      visibilityToolFormData.selectedPhotoAssetIds.includes(asset.id),
+    );
+
     try {
-      const selectedAsset =
-        photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+      const result = await generateVisibilityContent({
+        toolType:
+          selectedVisibilityToolId === 'local-reach-post'
+            ? 'local_reach_post'
+            : selectedVisibilityToolId === 'review-request'
+              ? 'review_request'
+              : selectedVisibilityToolId === 'business-intro-post'
+                ? 'business_intro_post'
+                : 'craigslist_service_ad',
+        destination: visibilityToolFormData.destination,
+        postType: visibilityToolFormData.postType,
+        businessProfile,
+        serviceFocus: visibilityToolFormData.serviceFocus,
+        location: visibilityToolFormData.location,
+        goal: visibilityToolFormData.goal,
+        tone: visibilityToolFormData.tone,
+        cta: visibilityToolFormData.cta,
+        notes: visibilityToolFormData.notes,
+        customerName: visibilityToolFormData.customerName,
+        jobCompleted: visibilityToolFormData.jobCompleted,
+        reviewLink: visibilityToolFormData.reviewLink,
+        servicesToMention: visibilityToolFormData.servicesToMention,
+        businessBackground: visibilityToolFormData.businessBackground,
+        offerDetails: visibilityToolFormData.offerDetails,
+        customerPainPoint: visibilityToolFormData.customerPainPoint,
+        trustSignals: visibilityToolFormData.trustSignals,
+        contact: visibilityToolFormData.contact,
+        photoAsset: selectedAsset ? photoAssetToVisibilityMetadata(selectedAsset) : null,
+        photoAssets: selectedAssets.map(photoAssetToVisibilityMetadata),
+        outputFormat: 'structured',
+      });
+      setVisibilityToolOutput(result);
+    } catch (err) {
       const generatedText = buildVisibilityToolOutput(
         selectedVisibilityToolId,
         visibilityToolFormData,
         businessProfile,
-        selectedAsset,
+        selectedVisibilityToolId === 'craigslist-service-ad' ? selectedAssets[0] ?? null : selectedAsset,
       );
-      setVisibilityToolOutput(generatedText);
-    } catch (err) {
-      setVisibilityToolError(err instanceof Error ? err.message : 'Unable to generate this visibility tool.');
+      setVisibilityToolOutput(fallbackVisibilityResponseFromText(generatedText));
+      setVisibilityToolError(
+        err instanceof Error
+          ? `Backend generation unavailable. Showing fallback output. ${err.message}`
+          : 'Backend generation unavailable. Showing fallback output.',
+      );
     } finally {
       setVisibilityToolGenerating(false);
     }
@@ -2259,14 +2432,15 @@ function App() {
     setVisibilityToolError(null);
 
     try {
-      if (!visibilityToolOutput.trim()) {
+      const copyText = formatVisibilityResponseForCopy(visibilityToolOutput);
+      if (!copyText.trim()) {
         throw new Error('Generate an output before copying.');
       }
       if (!navigator.clipboard?.writeText) {
         throw new Error('Clipboard API is not available.');
       }
 
-      await navigator.clipboard.writeText(visibilityToolOutput);
+      await navigator.clipboard.writeText(copyText);
       setVisibilityToolCopied(true);
       window.setTimeout(() => setVisibilityToolCopied(false), 1800);
     } catch (err) {
@@ -3268,6 +3442,11 @@ function App() {
   const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId);
   const selectedVisibilityPhotoAsset =
     photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+  const enabledVisibilityChannels = visibilityChannelsFromProfile(businessProfile);
+  const enabledLocalReachDestinations = enabledVisibilityChannels.map(destinationFromVisibilityChannel);
+  const visibleVisibilityToolCards = visibilityToolCards.filter(
+    (tool) => tool.id !== 'craigslist-service-ad' || enabledVisibilityChannels.includes('Craigslist'),
+  );
   const activeNavIndex = Math.max(
     appNavItems.findIndex((item) => item.key === activeSection),
     0,
@@ -3375,7 +3554,7 @@ function App() {
           </div>
 
           <div className="visibility-tool-grid">
-            {visibilityToolCards.map((tool) => (
+            {visibleVisibilityToolCards.map((tool) => (
               <button
                 className="visibility-tool-card"
                 key={tool.id}
@@ -4085,12 +4264,16 @@ function App() {
           photoAsset={selectedVisibilityPhotoAsset}
           profile={businessProfile}
           tool={selectedVisibilityTool}
+          enabledDestinations={enabledLocalReachDestinations}
           onCancel={closeVisibilityTool}
           onChange={updateVisibilityToolFormData}
           onCopy={() => void handleCopyVisibilityToolOutput()}
           onGenerate={() => void handleGenerateVisibilityTool()}
           onOutputChange={(output) => {
-            setVisibilityToolOutput(output);
+            setVisibilityToolOutput((current) => ({
+              ...(current ?? { generationMode: 'fallback' }),
+              primary: output,
+            }));
             setVisibilityToolCopied(false);
           }}
         />
@@ -4283,6 +4466,15 @@ function BusinessProfileSection({
       selected ? draft.platforms_used.filter((item) => item !== platform) : [...draft.platforms_used, platform],
     );
   };
+  const toggleVisibilityChannel = (channel: VisibilityChannel) => {
+    const selected = (draft.visibility_channels ?? defaultVisibilityChannels).includes(channel);
+    updateField(
+      'visibility_channels',
+      selected
+        ? (draft.visibility_channels ?? defaultVisibilityChannels).filter((item) => item !== channel)
+        : [...(draft.visibility_channels ?? defaultVisibilityChannels), channel],
+    );
+  };
 
   return (
     <section className="panel business-profile-panel">
@@ -4317,6 +4509,7 @@ function BusinessProfileSection({
             {profile.email ? <span>Email: {profile.email}</span> : null}
             <span>Tone: {profile.brand_tone}</span>
             <span>Target: {profile.target_customer}</span>
+            <span>Visibility: {visibilityChannelsFromProfile(profile).join(', ')}</span>
           </div>
         </aside>
 
@@ -4392,6 +4585,21 @@ function BusinessProfileSection({
                       onChange={() => togglePlatform(platform)}
                     />
                     <span>{platform}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset className="option-group">
+              <legend>Visibility channels</legend>
+              <div className="checkbox-grid">
+                {visibilityChannelOptions.map((channel) => (
+                  <label className="checkbox-card" key={channel}>
+                    <input
+                      checked={(draft.visibility_channels ?? defaultVisibilityChannels).includes(channel)}
+                      type="checkbox"
+                      onChange={() => toggleVisibilityChannel(channel)}
+                    />
+                    <span>{channel}</span>
                   </label>
                 ))}
               </div>
@@ -5045,6 +5253,7 @@ function VisibilityToolModal({
   photoAsset,
   profile,
   tool,
+  enabledDestinations,
   onCancel,
   onChange,
   onCopy,
@@ -5055,13 +5264,14 @@ function VisibilityToolModal({
   error: string | null;
   formData: VisibilityToolFormData;
   generating: boolean;
-  output: string;
+  output: VisibilityGenerationResponse | null;
   photoAssets: PhotoAsset[];
   photoAsset: PhotoAsset | null;
   profile: BusinessProfile;
   tool: VisibilityToolCard;
+  enabledDestinations: LocalReachDestination[];
   onCancel: () => void;
-  onChange: (field: keyof VisibilityToolFormData, value: string) => void;
+  onChange: (field: keyof VisibilityToolFormData, value: string | string[]) => void;
   onCopy: () => void;
   onGenerate: () => void;
   onOutputChange: (output: string) => void;
@@ -5074,6 +5284,7 @@ function VisibilityToolModal({
   const selectedPhotoLabel = photoAsset
     ? [photoAsset.title, photoAsset.service_type, photoAsset.location].filter(Boolean).join(' - ')
     : '';
+  const localReachDestinations = enabledDestinations.length > 0 ? enabledDestinations : localReachDestinationOptions;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
@@ -5114,7 +5325,7 @@ function VisibilityToolModal({
                   value={formData.destination}
                   onChange={(event) => onChange('destination', event.target.value)}
                 >
-                  {localReachDestinationOptions.map((destination) => (
+                  {localReachDestinations.map((destination) => (
                     <option key={destination}>{destination}</option>
                   ))}
                 </select>
@@ -5234,7 +5445,61 @@ function VisibilityToolModal({
             </>
           ) : null}
 
-          {supportsPhoto ? (
+          {tool.id === 'craigslist-service-ad' ? (
+            <>
+              <label className="form-field">
+                <span>Service focus</span>
+                <input
+                  list={serviceListId}
+                  value={formData.serviceFocus}
+                  onChange={(event) => onChange('serviceFocus', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Location/service area</span>
+                <input
+                  list={locationListId}
+                  value={formData.location}
+                  onChange={(event) => onChange('location', event.target.value)}
+                />
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Offer/promo details</span>
+                <textarea
+                  value={formData.offerDetails}
+                  onChange={(event) => onChange('offerDetails', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Customer pain point</span>
+                <input
+                  value={formData.customerPainPoint}
+                  onChange={(event) => onChange('customerPainPoint', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>CTA</span>
+                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Trust signals</span>
+                <textarea
+                  value={formData.trustSignals}
+                  onChange={(event) => onChange('trustSignals', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Phone or website</span>
+                <input value={formData.contact} onChange={(event) => onChange('contact', event.target.value)} />
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Notes/context</span>
+                <textarea value={formData.notes} onChange={(event) => onChange('notes', event.target.value)} />
+              </label>
+            </>
+          ) : null}
+
+          {supportsPhoto && tool.id === 'local-reach-post' ? (
             <label className="form-field form-field-wide">
               <span>Optional photo asset</span>
               <select value={formData.photoAssetId} onChange={(event) => onChange('photoAssetId', event.target.value)}>
@@ -5247,6 +5512,37 @@ function VisibilityToolModal({
               </select>
               {selectedPhotoLabel ? <small>{selectedPhotoLabel}</small> : null}
             </label>
+          ) : null}
+
+          {tool.id === 'craigslist-service-ad' ? (
+            <fieldset className="option-group">
+              <legend>Select 5-6 photo assets</legend>
+              <div className="checkbox-grid content-type-grid">
+                {photoAssets.map((asset) => (
+                  <label className="checkbox-card" key={asset.id}>
+                    <input
+                      checked={formData.selectedPhotoAssetIds.includes(asset.id)}
+                      disabled={
+                        !formData.selectedPhotoAssetIds.includes(asset.id) &&
+                        formData.selectedPhotoAssetIds.length >= 6
+                      }
+                      type="checkbox"
+                      onChange={() => {
+                        const selected = formData.selectedPhotoAssetIds.includes(asset.id);
+                        onChange(
+                          'selectedPhotoAssetIds',
+                          selected
+                            ? formData.selectedPhotoAssetIds.filter((id) => id !== asset.id)
+                            : [...formData.selectedPhotoAssetIds, asset.id].slice(0, 6),
+                        );
+                      }}
+                    />
+                    <span>{[asset.title, asset.service_type, asset.location].filter(Boolean).join(' - ')}</span>
+                  </label>
+                ))}
+              </div>
+              {photoAssets.length === 0 ? <p className="empty-cell">No photo assets available yet.</p> : null}
+            </fieldset>
           ) : null}
 
           {tool.id === 'local-reach-post' ? (
@@ -5270,12 +5566,64 @@ function VisibilityToolModal({
         <section className="visibility-output-preview">
           <div className="visibility-output-heading">
             <span>Generated output</span>
-            <button className="secondary-button" disabled={!output.trim()} type="button" onClick={onCopy}>
+            {output?.generationMode ? (
+              <em className={`generation-mode-badge generation-mode-${output.generationMode}`}>
+                {output.generationMode === 'llm' ? 'AI generated' : 'Fallback generated'}
+              </em>
+            ) : null}
+            <button className="secondary-button" disabled={!formatVisibilityResponseForCopy(output).trim()} type="button" onClick={onCopy}>
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
           {output ? (
-            <textarea value={output} onChange={(event) => onOutputChange(event.target.value)} />
+            <div className="visibility-output-sections">
+              <label className="form-field form-field-wide">
+                <span>Primary output</span>
+                <textarea value={output.primary ?? ''} onChange={(event) => onOutputChange(event.target.value)} />
+              </label>
+              {output.shortVersion ? (
+                <div className="visibility-output-block">
+                  <strong>Short version</strong>
+                  <p>{output.shortVersion}</p>
+                </div>
+              ) : null}
+              {output.ctaLine ? (
+                <div className="visibility-output-block">
+                  <strong>CTA line</strong>
+                  <p>{output.ctaLine}</p>
+                </div>
+              ) : null}
+              {output.titles?.length ? (
+                <div className="visibility-output-block">
+                  <strong>Titles</strong>
+                  <ul>
+                    {output.titles.map((title) => (
+                      <li key={title}>{title}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {output.hashtagsOrKeywords?.length ? (
+                <div className="visibility-output-block">
+                  <strong>Hashtags/keywords</strong>
+                  <ul>
+                    {output.hashtagsOrKeywords.map((keyword) => (
+                      <li key={keyword}>{keyword}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {output.imageSuggestions?.length ? (
+                <div className="visibility-output-block">
+                  <strong>Image suggestions</strong>
+                  <ul>
+                    {output.imageSuggestions.map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <p>Generated copy will appear here after you fill the form and click Generate.</p>
           )}

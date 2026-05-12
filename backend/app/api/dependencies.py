@@ -27,6 +27,10 @@ async def get_content_agent() -> ContentAgent:
     return ContentAgent(llm_service=LLMService())
 
 
+async def get_llm_service() -> LLMService:
+    return LLMService()
+
+
 async def get_sheets_service() -> SheetsService:
     return SheetsService()
 

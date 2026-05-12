@@ -13,6 +13,8 @@ import type {
   PhotoAsset,
   PhotoAssetPayload,
   SocialQueueGenerateResponse,
+  VisibilityGenerationRequest,
+  VisibilityGenerationResponse,
   WeeklySocialQueueGenerateRequest,
 } from './types';
 
@@ -152,6 +154,15 @@ export function generateManualSocialPost(
   payload: ManualSocialPostGenerateRequest = {},
 ): Promise<SocialQueueGenerateResponse> {
   return request<SocialQueueGenerateResponse>('/posts/generate-post', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateVisibilityContent(
+  payload: VisibilityGenerationRequest,
+): Promise<VisibilityGenerationResponse> {
+  return request<VisibilityGenerationResponse>('/visibility/generate', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
