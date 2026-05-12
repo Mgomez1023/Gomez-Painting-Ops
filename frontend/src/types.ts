@@ -62,6 +62,7 @@ export type Campaign = {
 
 export type CampaignDraftSet = {
   facebook_post: string;
+  facebook_group_post?: string;
   google_business_post: string;
   instagram_caption: string;
   craigslist_post: string;
@@ -141,7 +142,53 @@ export type BusinessProfile = {
   brand_tone: string;
   target_customer: string;
   primary_cta: string;
-  platforms_used: Array<'Facebook' | 'Instagram' | 'Google Business'>;
+  platforms_used: Array<'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups'>;
+};
+
+export type PhotoAssetQuality = 'standard' | 'strong' | 'hero';
+
+export type PhotoAssetCategory =
+  | 'Before'
+  | 'After'
+  | 'Before/After Pair'
+  | 'Interior'
+  | 'Exterior'
+  | 'Cabinets'
+  | 'Trim'
+  | 'Drywall Repair'
+  | 'Team / Work In Progress'
+  | 'Finished Project';
+
+export type PhotoAsset = {
+  id: string;
+  business_id: string;
+  image_url: string | null;
+  image_path: string | null;
+  image_filename: string | null;
+  title: string;
+  description: string;
+  category: PhotoAssetCategory;
+  service_type: string;
+  location: string;
+  tags: string[];
+  quality: PhotoAssetQuality;
+  used_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PhotoAssetPayload = {
+  business_id?: string | null;
+  image_data?: string | null;
+  image_url?: string | null;
+  image_filename?: string | null;
+  title: string;
+  description: string;
+  category: PhotoAssetCategory;
+  service_type: string;
+  location: string;
+  tags: string[];
+  quality: PhotoAssetQuality;
 };
 
 export type WeeklySocialQueueGenerateRequest = {

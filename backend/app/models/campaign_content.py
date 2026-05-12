@@ -13,11 +13,12 @@ CampaignPlatform = Literal[
     "Craigslist",
     "Nextdoor",
 ]
-BusinessProfilePlatform = Literal["Facebook", "Instagram", "Google Business"]
+BusinessProfilePlatform = Literal["Facebook", "Instagram", "Google Business", "Facebook Groups"]
 
 
 class CampaignDraftSet(BaseModel):
     facebook_post: str = Field(..., min_length=1)
+    facebook_group_post: str = Field(default="", min_length=0)
     google_business_post: str = Field(..., min_length=1)
     instagram_caption: str = Field(..., min_length=1)
     craigslist_post: str = Field(..., min_length=1)
@@ -81,6 +82,14 @@ class CampaignContentPublishResponse(BaseModel):
 
 class CampaignContentScheduleRequest(BaseModel):
     scheduled_at: str = Field(..., min_length=1)
+
+
+class CampaignContentImageUpdateRequest(BaseModel):
+    image_filename: str | None = None
+    image_path: str | None = None
+    image_url: str | None = None
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 class CampaignContentRunDueResponse(BaseModel):

@@ -4,6 +4,7 @@ from app.agents.content_agent import ContentAgent
 from app.agents.campaign_agent import CampaignAgent
 from app.services.campaign_image_service import CampaignImageService
 from app.services.llm_service import LLMService
+from app.services.photo_asset_service import PhotoAssetService
 from app.services.publisher_service import PublisherService
 from app.services.publishing_workflow_service import PublishingWorkflowService
 from app.services.sheets_service import SheetsService
@@ -16,6 +17,10 @@ async def get_campaign_agent() -> CampaignAgent:
 
 async def get_campaign_image_service() -> CampaignImageService:
     return CampaignImageService()
+
+
+async def get_photo_asset_service() -> PhotoAssetService:
+    return PhotoAssetService()
 
 
 async def get_content_agent() -> ContentAgent:
@@ -44,9 +49,11 @@ async def get_social_queue_service(
     sheets_service: SheetsService = Depends(get_sheets_service),
     campaign_agent: CampaignAgent = Depends(get_campaign_agent),
     campaign_image_service: CampaignImageService = Depends(get_campaign_image_service),
+    photo_asset_service: PhotoAssetService = Depends(get_photo_asset_service),
 ) -> SocialQueueService:
     return SocialQueueService(
         sheets_service=sheets_service,
         campaign_agent=campaign_agent,
         campaign_image_service=campaign_image_service,
+        photo_asset_service=photo_asset_service,
     )

@@ -10,6 +10,7 @@ from app.api.routes_content import router as content_router
 from app.api.routes_content_queue import router as content_queue_router
 from app.api.routes_health import router as health_router
 from app.api.routes_jobs import router as jobs_router
+from app.api.routes_photo_assets import router as photo_assets_router
 from app.api.routes_publisher import router as publisher_router
 from app.api.routes_posts import router as posts_router
 from app.config import settings
@@ -38,14 +39,22 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(content_router)
     app.include_router(content_queue_router)
+    app.include_router(photo_assets_router)
     app.include_router(posts_router)
     app.include_router(publisher_router)
     media_campaigns_dir = Path(__file__).resolve().parents[1] / "media" / "campaigns"
     media_campaigns_dir.mkdir(parents=True, exist_ok=True)
+    media_photo_assets_dir = Path(__file__).resolve().parents[1] / "media" / "photo-assets"
+    media_photo_assets_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/media/campaigns",
         StaticFiles(directory=media_campaigns_dir),
         name="campaign-media",
+    )
+    app.mount(
+        "/media/photo-assets",
+        StaticFiles(directory=media_photo_assets_dir),
+        name="photo-asset-media",
     )
     return app
 

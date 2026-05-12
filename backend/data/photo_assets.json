@@ -1,0 +1,36 @@
+[
+  {
+    "id": "photo-77966729695d",
+    "business_id": "marom-painting",
+    "image_url": null,
+    "image_path": "/media/photo-assets/79849926228-8efe6d62-d035-40a2-aaff-72e430fcc145-photo-77966729695d.jpg",
+    "image_filename": "79849926228-8efe6d62-d035-40a2-aaff-72e430fcc145-photo-77966729695d.jpg",
+    "title": "79849926228 8EFE6D62 D035 40A2 AAFF 72E430FCC145",
+    "description": "",
+    "category": "Finished Project",
+    "service_type": "",
+    "location": "",
+    "tags": [],
+    "quality": "standard",
+    "used_count": 0,
+    "created_at": "2026-05-11T14:13:54Z",
+    "updated_at": "2026-05-11T14:13:54Z"
+  },
+  {
+    "id": "photo-674bdb4dbead",
+    "business_id": "marom-painting",
+    "image_url": null,
+    "image_path": "/media/photo-assets/79669383935-a4b23eba-5aee-456a-a722-dd8f63dd8194-photo-674bdb4dbead.jpg",
+    "image_filename": "79669383935-a4b23eba-5aee-456a-a722-dd8f63dd8194-photo-674bdb4dbead.jpg",
+    "title": "79669383935 A4B23EBA 5AEE 456A A722 DD8F63DD8194",
+    "description": "",
+    "category": "Finished Project",
+    "service_type": "",
+    "location": "",
+    "tags": [],
+    "quality": "standard",
+    "used_count": 0,
+    "created_at": "2026-05-11T14:13:42Z",
+    "updated_at": "2026-05-11T14:13:42Z"
+  }
+]

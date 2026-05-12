@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import base64
 import json
 from pathlib import Path
@@ -442,6 +442,28 @@ class SheetsService:
                 "scheduled_at": scheduled_at,
                 "published": "No",
                 "notes": self._update_schedule_notes(post.notes, scheduled_at),
+            }
+        )
+        self._update_posts_row(row_number=row_number, item=updated_post)
+        return updated_post
+
+    def update_post_image(
+        self,
+        content_id: str,
+        image_filename: str | None,
+        image_path: str | None,
+        image_url: str | None = None,
+    ) -> CampaignContentQueueItem | None:
+        match = self._find_post_row_by_id(content_id)
+        if match is None:
+            return None
+
+        row_number, post = match
+        updated_post = post.model_copy(
+            update={
+                "image_filename": image_filename,
+                "image_path": image_path,
+                "image_url": image_url,
             }
         )
         self._update_posts_row(row_number=row_number, item=updated_post)
@@ -1116,6 +1138,7 @@ class SheetsService:
         content_id_timestamp = created_at.strftime("%Y%m%dT%H%M%S%fZ")
         platform_drafts = [
             ("Facebook", "facebook", draft_set.facebook_post),
+            ("Facebook Groups", "facebook-groups", draft_set.facebook_group_post or draft_set.facebook_post),
             ("Google Business", "google-business", draft_set.google_business_post),
             ("Instagram", "instagram", draft_set.instagram_caption),
             ("Craigslist", "craigslist", draft_set.craigslist_post),
@@ -1370,6 +1393,12 @@ class SheetsService:
     def _update_schedule_notes(notes: str, scheduled_at: str) -> str:
         scheduled_date, day_of_week = SheetsService._schedule_note_values(scheduled_at)
         updated_notes = SheetsService._replace_note_value(notes, "Scheduled Date", scheduled_date)
+        week_key = SheetsService._week_key_for_schedule_date(scheduled_date)
+        if week_key:
+            updated_notes = SheetsService._replace_note_value(updated_notes, "Week", week_key)
+        week_start = SheetsService._week_start_for_schedule_date(scheduled_date)
+        if week_start:
+            updated_notes = SheetsService._replace_note_value(updated_notes, "Week Start", week_start)
         if day_of_week:
             updated_notes = SheetsService._replace_note_value(updated_notes, "Day of Week", day_of_week)
         return updated_notes
@@ -1382,6 +1411,25 @@ class SheetsService:
             scheduled_date = scheduled_at.split("T", 1)[0].strip()
             return scheduled_date, ""
         return scheduled_datetime.date().isoformat(), scheduled_datetime.strftime("%A")
+
+    @staticmethod
+    def _week_key_for_schedule_date(scheduled_date: str) -> str:
+        try:
+            parsed_date = date.fromisoformat(scheduled_date)
+        except ValueError:
+            return ""
+
+        year, week_number, _ = parsed_date.isocalendar()
+        return f"{year}-W{week_number:02d}"
+
+    @staticmethod
+    def _week_start_for_schedule_date(scheduled_date: str) -> str:
+        try:
+            parsed_date = date.fromisoformat(scheduled_date)
+        except ValueError:
+            return ""
+
+        return (parsed_date - timedelta(days=parsed_date.weekday())).isoformat()
 
     @staticmethod
     def _replace_note_value(notes: str, key: str, value: str) -> str:
@@ -1441,6 +1489,8 @@ class SheetsService:
     def _campaign_content_due_skip_reasons(item: CampaignContentQueueItem, now: datetime) -> list[str]:
         skip_reasons: list[str] = []
 
+        if item.platform == "Facebook Groups":
+            skip_reasons.append("Facebook Groups posts are manual only.")
         if item.approved != "Yes":
             skip_reasons.append("Approved must be Yes.")
         if item.published == "Yes":

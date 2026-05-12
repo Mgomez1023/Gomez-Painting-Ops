@@ -7,6 +7,7 @@ from app.models.campaign_content import (
     ManualSocialPostGenerateRequest,
     WeeklySocialQueueGenerateRequest,
 )
+from app.models.photo_asset import PhotoAsset
 from app.services.campaign_image_service import CampaignImageMetadata
 from app.services.social_queue_service import STATIC_WEEKLY_AVOID_PHRASES, SocialQueueService
 
@@ -31,6 +32,7 @@ def _campaign(campaign_id: str = "CAMP-1001", status: str = "Active") -> Campaig
 def _draft_set() -> CampaignDraftSet:
     return CampaignDraftSet(
         facebook_post="Facebook caption",
+        facebook_group_post="Facebook Groups caption",
         google_business_post="Google Business caption",
         instagram_caption="Instagram caption",
         craigslist_post="Craigslist caption",
@@ -75,6 +77,7 @@ class FakeCampaignAgent:
         return draft_set.model_copy(
             update={
                 "facebook_post": f"{post_type} Facebook caption. {campaign.landing_page_url}",
+                "facebook_group_post": f"{post_type} Facebook Groups caption. {campaign.landing_page_url}",
                 "google_business_post": f"{post_type} Google Business caption. {campaign.landing_page_url}",
                 "instagram_caption": f"{post_type} Instagram caption. {campaign.landing_page_url}",
             }
@@ -97,6 +100,19 @@ class FakeCampaignImageService:
             image_filename=f"image-{image_index}.jpg",
             image_path=f"/media/campaigns/image-{image_index}.jpg",
         )
+
+
+class FakePhotoAssetService:
+    def __init__(self, assets: list[PhotoAsset]) -> None:
+        self.assets = assets
+        self.incremented_asset_ids: list[str] = []
+
+    def list_photo_assets(self, business_id: str | None = None) -> list[PhotoAsset]:
+        return self.assets
+
+    def increment_used_count(self, asset_id: str) -> PhotoAsset | None:
+        self.incremented_asset_ids.append(asset_id)
+        return next((asset for asset in self.assets if asset.id == asset_id), None)
 
 
 class FakeSheetsService:
@@ -383,6 +399,34 @@ def test_generate_weekly_schedule_uses_selected_week_days_platforms_and_content_
     assert "Instagram caption" in instagram_item.draft_text
 
 
+def test_generate_weekly_posts_can_include_facebook_groups_as_manual_platform() -> None:
+    sheets_service = FakeSheetsService()
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_weekly_posts(
+        WeeklySocialQueueGenerateRequest(
+            week_start_date="2026-05-11",
+            content_days=1,
+            platforms=["Facebook", "Instagram", "Google Business", "Facebook Groups"],
+            separate_meta_platforms=True,
+        )
+    )
+
+    assert {item.platform for item in result.queue_items} == {
+        "Facebook",
+        "Instagram",
+        "Google Business",
+        "Facebook Groups",
+    }
+    group_item = next(item for item in result.queue_items if item.platform == "Facebook Groups")
+    assert "Facebook Groups caption" in group_item.draft_text
+    assert campaign_agent.generate_for_post_type_calls[0]["platform"] == (
+        "Facebook, Instagram, Google Business, Facebook Groups"
+    )
+
+
 def test_generate_weekly_posts_uses_business_profile_when_no_campaign_is_selected() -> None:
     sheets_service = FakeSheetsService(campaigns=[])
     campaign_agent = FakeCampaignAgent()
@@ -437,6 +481,38 @@ def test_generate_weekly_posts_avoids_images_already_used_in_same_week() -> None
     }
     assert "image-1.jpg" not in generated_images
     assert len(generated_images) == len(result.queue_items) - 1
+
+
+def test_generate_weekly_posts_selects_matching_photo_asset_and_tracks_usage() -> None:
+    sheets_service = FakeSheetsService()
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    photo_asset = PhotoAsset(
+        id="photo-interior-1",
+        business_id="marom-painting",
+        image_path="/media/photo-assets/interior-refresh.jpg",
+        image_filename="interior-refresh.jpg",
+        title="Interior Refresh",
+        description="Fresh interior painting project.",
+        category="Interior",
+        service_type="Interior painting",
+        location="Oak Park",
+        tags=["seasonal", "walls"],
+        quality="hero",
+        used_count=0,
+        created_at="2026-05-01T12:00:00Z",
+        updated_at="2026-05-01T12:00:00Z",
+    )
+    photo_asset_service = FakePhotoAssetService([photo_asset])
+    service = SocialQueueService(sheets_service, campaign_agent, image_service, photo_asset_service)
+
+    service.generate_weekly_posts(WeeklySocialQueueGenerateRequest(posts_per_platform=1))
+
+    assert len(sheets_service.appended_items) == 2
+    assert image_service.selection_count == 0
+    assert all(item.image_path == photo_asset.image_path for item in sheets_service.appended_items)
+    assert all(item.image_filename == photo_asset.image_filename for item in sheets_service.appended_items)
+    assert photo_asset_service.incremented_asset_ids == [photo_asset.id]
 
 
 def test_generate_weekly_posts_passes_static_and_recent_openings_to_avoid() -> None:
@@ -576,3 +652,18 @@ def test_generate_manual_post_merges_instagram_into_meta_dual() -> None:
     assert queue_item.platform == "Meta Dual"
     assert queue_item.draft_text == "General Facebook caption. https://marompainting.org"
     assert campaign_agent.generate_for_post_type_calls[0]["platform"] == "Meta Dual"
+
+
+def test_generate_manual_post_creates_facebook_groups_item_with_group_copy() -> None:
+    sheets_service = FakeSheetsService()
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_manual_post(ManualSocialPostGenerateRequest(platform="Facebook Groups"))
+
+    assert len(result.queue_items) == 1
+    queue_item = result.queue_items[0]
+    assert queue_item.platform == "Facebook Groups"
+    assert queue_item.draft_text == "General Facebook Groups caption. https://marompainting.org"
+    assert campaign_agent.generate_for_post_type_calls[0]["platform"] == "Facebook Groups"

@@ -10,6 +10,8 @@ import type {
   ContentQueueItem,
   ContentQueueSaveResponse,
   ManualSocialPostGenerateRequest,
+  PhotoAsset,
+  PhotoAssetPayload,
   SocialQueueGenerateResponse,
   WeeklySocialQueueGenerateRequest,
 } from './types';
@@ -214,10 +216,47 @@ export function updatePostScheduledAt(contentId: string, scheduledAt: string): P
   });
 }
 
+export function updatePostImage(
+  contentId: string,
+  payload: Pick<CampaignContentQueueItem, 'image_filename' | 'image_path' | 'image_url'>,
+): Promise<CampaignContentQueueItem> {
+  return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}/image`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
 export function deletePost(contentId: string): Promise<CampaignContentQueueItem> {
   return request<CampaignContentQueueItem>(`/posts/${encodeURIComponent(contentId)}`, {
     method: 'DELETE',
   });
+}
+
+export function getPhotoAssets(businessId = 'marom-painting'): Promise<PhotoAsset[]> {
+  return request<PhotoAsset[]>(`/photo-assets?business_id=${encodeURIComponent(businessId)}`);
+}
+
+export function createPhotoAsset(payload: PhotoAssetPayload): Promise<PhotoAsset> {
+  return request<PhotoAsset>('/photo-assets', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updatePhotoAsset(assetId: string, payload: Partial<PhotoAssetPayload>): Promise<PhotoAsset> {
+  return request<PhotoAsset>(`/photo-assets/${encodeURIComponent(assetId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deletePhotoAsset(assetId: string, businessId = 'marom-painting'): Promise<PhotoAsset> {
+  return request<PhotoAsset>(
+    `/photo-assets/${encodeURIComponent(assetId)}?business_id=${encodeURIComponent(businessId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export function publishCampaignContent(contentId: string): Promise<CampaignContentPublishResponse> {

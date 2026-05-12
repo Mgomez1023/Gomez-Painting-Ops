@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     instagram_business_account_id: str | None = None
     public_site_base_url: str | None = None
     api_public_base_url: str | None = None
+    default_business_id: str = "marom-painting"
+    photo_assets_data_file: str | None = None
+    photo_assets_media_dir: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

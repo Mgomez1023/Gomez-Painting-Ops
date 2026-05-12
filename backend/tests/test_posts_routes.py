@@ -42,6 +42,24 @@ class FakePostsSheetsService:
         self.updated_item = self.item.model_copy(update={"scheduled_at": scheduled_at, "published": "No"})
         return self.updated_item
 
+    def update_post_image(
+        self,
+        content_id: str,
+        image_filename: str | None,
+        image_path: str | None,
+        image_url: str | None = None,
+    ) -> CampaignContentQueueItem | None:
+        if content_id != self.item.content_id:
+            return None
+        self.updated_item = self.item.model_copy(
+            update={
+                "image_filename": image_filename,
+                "image_path": image_path,
+                "image_url": image_url,
+            }
+        )
+        return self.updated_item
+
     def delete_post(self, content_id: str) -> CampaignContentQueueItem | None:
         if content_id != self.item.content_id:
             return None
@@ -130,6 +148,59 @@ async def test_update_post_schedule_returns_404_when_post_is_missing() -> None:
         response = await client.patch(
             "/posts/WSQ-missing/schedule",
             json={"scheduled_at": "2026-05-01T12:00:00Z"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Post not found for content_id: WSQ-missing"}
+
+
+@pytest.mark.anyio
+async def test_update_post_image_returns_updated_post() -> None:
+    fake_sheets_service = FakePostsSheetsService()
+
+    async def override_sheets_service() -> FakePostsSheetsService:
+        return fake_sheets_service
+
+    app.dependency_overrides[get_sheets_service] = override_sheets_service
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/posts/WSQ-1001-meta-dual-1/image",
+            json={
+                "image_filename": "interior-refresh.jpg",
+                "image_path": "/media/photo-assets/interior-refresh.jpg",
+                "image_url": None,
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    parsed_response = CampaignContentQueueItem.model_validate(response.json())
+    assert parsed_response.image_filename == "interior-refresh.jpg"
+    assert parsed_response.image_path == "/media/photo-assets/interior-refresh.jpg"
+    assert parsed_response.image_url is None
+    assert fake_sheets_service.updated_item is not None
+
+
+@pytest.mark.anyio
+async def test_update_post_image_returns_404_when_post_is_missing() -> None:
+    async def override_sheets_service() -> FakePostsSheetsService:
+        return FakePostsSheetsService()
+
+    app.dependency_overrides[get_sheets_service] = override_sheets_service
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/posts/WSQ-missing/image",
+            json={
+                "image_filename": "interior-refresh.jpg",
+                "image_path": "/media/photo-assets/interior-refresh.jpg",
+            },
         )
 
     app.dependency_overrides.clear()

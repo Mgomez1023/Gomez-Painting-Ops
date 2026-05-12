@@ -73,6 +73,7 @@ def _campaign() -> Campaign:
 def _campaign_draft_set(needs_human_review: bool = True) -> CampaignDraftSet:
     return CampaignDraftSet(
         facebook_post="Facebook campaign draft",
+        facebook_group_post="Facebook Groups campaign draft",
         google_business_post="Google Business campaign draft",
         instagram_caption="Instagram campaign draft",
         craigslist_post="Craigslist campaign draft",
@@ -139,6 +140,9 @@ def test_placeholder_provider_returns_deterministic_campaign_draft_set() -> None
     draft_set = service.generate_campaign_draft_set(campaign=_campaign(), system_prompt="Prompt")
 
     assert "Oak Park" in draft_set.facebook_post
+    assert "Hey neighbors" in draft_set.facebook_group_post
+    assert "happy to take a look" in draft_set.facebook_group_post
+    assert "provides" in draft_set.google_business_post
     assert "https://gomezpainting.example/quote" in draft_set.nextdoor_post
     assert draft_set.needs_human_review is True
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies import get_sheets_service, get_social_queue_service
 from app.models.campaign_content import (
+    CampaignContentImageUpdateRequest,
     CampaignContentScheduleRequest,
     CampaignContentQueueItem,
     ManualSocialPostGenerateRequest,
@@ -138,6 +139,33 @@ async def update_post_schedule(
         updated_post = sheets_service.update_post_scheduled_at(
             content_id=content_id,
             scheduled_at=request.scheduled_at,
+        )
+    except SheetsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except SheetsDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return _serialize_updated_post(content_id=content_id, updated_post=updated_post)
+
+
+@router.patch("/{content_id}/image", response_model=CampaignContentQueueItem)
+async def update_post_image(
+    content_id: str,
+    request: CampaignContentImageUpdateRequest,
+    sheets_service: SheetsService = Depends(get_sheets_service),
+) -> dict[str, Any]:
+    try:
+        updated_post = sheets_service.update_post_image(
+            content_id=content_id,
+            image_filename=request.image_filename,
+            image_path=request.image_path,
+            image_url=request.image_url,
         )
     except SheetsConfigurationError as exc:
         raise HTTPException(

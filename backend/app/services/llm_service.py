@@ -102,10 +102,15 @@ class LLMService:
                 f"{angle_line} {business_name} is helping {campaign.target_customer.lower()} with {local_focus}.{offer_line} "
                 f"If you are planning a project, request a quote online. {quote_line}"
             ),
+            facebook_group_post=(
+                f"Hey neighbors - we recently worked on {campaign.service_focus.lower()} around {campaign.target_location} "
+                f"and wanted to share it with local homeowners. If anyone nearby needs help with "
+                f"{campaign.service_focus.lower()}, {business_name} is happy to take a look and give a free estimate. "
+                f"{campaign.landing_page_url}"
+            ),
             google_business_post=(
-                f"{angle_line} Planning {campaign.service_focus.lower()} near {campaign.target_location}? "
-                f"{business_name} offers local, professional {campaign.service_focus.lower()} for {campaign.target_customer.lower()}. "
-                f"{offer_line.strip()} {quote_line}".strip()
+                f"{business_name} provides {campaign.service_focus.lower()} for {campaign.target_customer.lower()} "
+                f"in {campaign.target_location}. {angle_line} {campaign.cta}: {campaign.landing_page_url}"
             ),
             instagram_caption=(
                 f"{angle_line} {business_name} can help with "

@@ -32,13 +32,15 @@ Rules:
 - Do not imply anything has already been published.
 - Include or clearly reference the CTA and landing page URL where appropriate.
 - Make each platform draft distinct enough for that platform.
+- Return `facebook_group_post` as a separate Facebook Groups draft, not a Facebook Page repost.
 - Keep platform-specific differences:
   - Facebook and Meta copy can be conversational and clear.
-  - Google Business copy should be direct, useful, and locally searchable.
+  - Facebook Groups copy should be casual, local, neighborly, and manual-post friendly. It can open with "Hey neighbors", should avoid sounding like an ad bot, should mention the service area naturally, and should use a soft CTA such as being happy to take a look or give a free estimate.
+  - Google Business copy should be direct, useful, locally searchable, service-focused, and CTA-oriented for people finding the business through Google Search or Maps.
   - Instagram copy can be shorter and visual, with restrained hashtags.
   - Craigslist and Nextdoor copy should feel practical and neighborly.
 - Avoid every phrase in avoid_phrases. If a phrase is an opening sentence, use a meaningfully different opening.
-- Return structured JSON only.
+- Return structured JSON only with `facebook_post`, `facebook_group_post`, `google_business_post`, `instagram_caption`, `craigslist_post`, and `nextdoor_post`.
 
 Post type guidance:
 

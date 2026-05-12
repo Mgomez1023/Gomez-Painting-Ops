@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { JSX, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  CSSProperties,
+  JSX,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   ApiError,
   approveCampaignContent,
   approveContent,
+  createPhotoAsset,
   deletePost,
+  deletePhotoAsset,
   generateAndSave,
   generateAndSaveCampaign,
   generateManualSocialPost,
@@ -14,6 +21,7 @@ import {
   getContentQueue,
   getJobs,
   getMediaUrl,
+  getPhotoAssets,
   getWeeklySocialQueue,
   markCampaignCopied,
   markCampaignPublished,
@@ -28,6 +36,8 @@ import {
   restorePostToQueue,
   runDuePublishing,
   scheduleCampaignContent,
+  updatePostImage,
+  updatePhotoAsset,
   updatePostDraftText,
   updatePostScheduledAt,
 } from './api';
@@ -39,46 +49,46 @@ import type {
   CompletedJob,
   ContentDraft,
   ContentQueueItem,
+  PhotoAsset,
+  PhotoAssetCategory,
+  PhotoAssetPayload,
+  PhotoAssetQuality,
 } from './types';
 
 type BusyAction = string | null;
 type PostAssistantCopiedAction = 'caption' | null;
 type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups' | 'Craigslist' | 'Nextdoor';
-type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business';
-type AppSection = 'calendar' | 'business-profile' | 'photo-library' | 'jobs-queues';
-type PhotoAssetQuality = 'standard' | 'strong' | 'hero';
-type PhotoAssetCategory =
-  | 'Before'
-  | 'After'
-  | 'Before/After Pair'
-  | 'Interior'
-  | 'Exterior'
-  | 'Cabinets'
-  | 'Trim'
-  | 'Drywall Repair'
-  | 'Team / Work In Progress'
-  | 'Finished Project';
-
-type PhotoAsset = {
-  id: string;
-  business_name: string;
-  image_url: string | null;
-  image_data: string | null;
-  image_filename: string | null;
-  title: string;
-  description: string;
-  category: PhotoAssetCategory;
-  service_type: string;
-  location: string;
-  tags: string[];
-  quality: PhotoAssetQuality;
-  used_count: number;
-  created_at: string;
-  updated_at: string;
-};
+type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups';
+type AppSection = 'calendar' | 'visibility-tools' | 'business-profile' | 'photo-library' | 'jobs-queues';
+type VisibilityToolId =
+  | 'local-reach-post'
+  | 'review-request'
+  | 'business-intro-post';
+type LocalReachDestination =
+  | 'Google Business Profile'
+  | 'Facebook Group'
+  | 'Craigslist'
+  | 'Neighborhood Group'
+  | 'General Social Post';
+type LocalReachPostType =
+  | 'Service promotion'
+  | 'Seasonal reminder'
+  | 'Recent project'
+  | 'Limited availability'
+  | 'New service area'
+  | 'Before/after post'
+  | 'Educational tip';
+type LocalReachGoal =
+  | 'Get estimate requests'
+  | 'Build trust'
+  | 'Show recent work'
+  | 'Announce availability'
+  | 'Improve local search visibility';
+type LocalReachTone = 'Professional' | 'Friendly neighbor' | 'Simple/direct' | 'Premium' | 'Casual';
 
 type PhotoAssetDraft = {
   image_url: string | null;
+  image_path: string | null;
   image_data: string | null;
   image_filename: string | null;
   title: string;
@@ -90,12 +100,53 @@ type PhotoAssetDraft = {
   quality: PhotoAssetQuality;
 };
 
+type StoredPhotoAssetPayload = Partial<PhotoAssetPayload> & {
+  id?: string;
+  business_name?: string;
+  image_path?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  used_count?: number;
+};
+
 type WeeklyScheduleSettings = {
   weekStartDate: string;
   contentDays: number;
   platforms: WeeklySchedulePlatform[];
   contentTypes: string[];
   campaignTheme: string;
+};
+
+type ManualPostSettings = {
+  scheduledDate: string;
+  title: string;
+  platforms: WeeklySchedulePlatform[];
+  contentType: string;
+  campaignId: string;
+};
+
+type VisibilityToolCard = {
+  id: VisibilityToolId;
+  title: string;
+  description: string;
+  label: string;
+};
+
+type VisibilityToolFormData = {
+  destination: LocalReachDestination;
+  postType: LocalReachPostType;
+  goal: LocalReachGoal;
+  serviceFocus: string;
+  location: string;
+  cta: string;
+  photoAssetId: string;
+  notes: string;
+  tone: LocalReachTone | string;
+  customerName: string;
+  jobCompleted: string;
+  reviewLink: string;
+  servicesToMention: string;
+  businessBackground: string;
 };
 
 type QueueGroup = {
@@ -180,6 +231,29 @@ type CalendarDropTarget = {
   dayElement: HTMLDetailsElement | null;
 };
 
+type AppNavItem = {
+  key: AppSection;
+  label: string;
+  description: string;
+};
+
+type PlatformStatusRow = {
+  platform: CalendarPlatform;
+  label: string;
+  status: string;
+};
+
+type WeeklyActionSummary = {
+  totalPlatformPosts: number;
+  publishedCount: number;
+  draftCount: number;
+  needsReviewCount: number;
+  failedCount: number;
+  readyCount: number;
+  contentSlotCount: number;
+  actionByPlatform: Array<{ platform: CalendarPlatform; label: string; count: number }>;
+};
+
 const draftFields: Array<[keyof ContentDraft, string]> = [
   ['facebook_post', 'Facebook'],
   ['google_business_post', 'Google Business'],
@@ -196,6 +270,7 @@ const platformOrder: Record<ContentQueueItem['platform'], number> = {
 
 const campaignDraftFields: Array<[keyof CampaignDraftSet, string]> = [
   ['facebook_post', 'Facebook'],
+  ['facebook_group_post', 'Facebook Groups'],
   ['google_business_post', 'Google Business'],
   ['instagram_caption', 'Instagram'],
   ['craigslist_post', 'Craigslist'],
@@ -212,12 +287,6 @@ const campaignPlatformOrder: Record<CampaignContentQueueItem['platform'], number
   Craigslist: 6,
   Nextdoor: 7,
 };
-
-const manualPlatformOptions: CampaignContentQueueItem['platform'][] = [
-  'Google Business',
-  'Meta Dual',
-  'Facebook Groups',
-];
 
 const calendarDays = [
   { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
@@ -238,9 +307,15 @@ const calendarPlatformOrder: Record<CalendarPlatform, number> = {
   Nextdoor: 6,
 };
 
-const coreCalendarPlatforms: CalendarPlatform[] = ['Facebook', 'Instagram', 'Google Business'];
+const coreCalendarPlatforms: CalendarPlatform[] = ['Facebook', 'Instagram', 'Google Business', 'Facebook Groups'];
 
-const weeklySchedulePlatformOptions: WeeklySchedulePlatform[] = ['Facebook', 'Instagram', 'Google Business'];
+const weeklySchedulePlatformOptions: WeeklySchedulePlatform[] = [
+  'Facebook',
+  'Instagram',
+  'Google Business',
+  'Facebook Groups',
+];
+const defaultWeeklySchedulePlatforms: WeeklySchedulePlatform[] = ['Facebook', 'Instagram', 'Google Business'];
 
 const weeklyScheduleContentTypeOptions = [
   'Seasonal Reminder',
@@ -254,8 +329,15 @@ const weeklyScheduleContentTypeOptions = [
 const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
 const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
 const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
+const defaultPhotoAssetBusinessId = 'marom-painting';
 const maxPhotoAssetDataUrlLength = 2_800_000;
-const businessProfilePlatforms: BusinessProfile['platforms_used'] = ['Facebook', 'Instagram', 'Google Business'];
+const businessProfilePlatforms: BusinessProfile['platforms_used'] = [
+  'Facebook',
+  'Instagram',
+  'Google Business',
+  'Facebook Groups',
+];
+const defaultBusinessProfilePlatforms: BusinessProfile['platforms_used'] = ['Facebook', 'Instagram', 'Google Business'];
 
 const photoAssetCategories: PhotoAssetCategory[] = [
   'Before',
@@ -275,6 +357,11 @@ const photoAssetQualityOptions: Array<{ value: PhotoAssetQuality; label: string 
   { value: 'strong', label: 'Strong' },
   { value: 'hero', label: 'Hero' },
 ];
+const photoAssetQualityScore: Record<PhotoAssetQuality, number> = {
+  standard: 0,
+  strong: 1,
+  hero: 2,
+};
 
 const defaultBusinessProfile: BusinessProfile = {
   business_name: 'Marom Painting',
@@ -287,24 +374,74 @@ const defaultBusinessProfile: BusinessProfile = {
   brand_tone: 'Professional, helpful, local, and trustworthy',
   target_customer: 'Homeowners and property managers who want clean, reliable painting work',
   primary_cta: 'Request a free estimate',
-  platforms_used: [...businessProfilePlatforms],
+  platforms_used: [...defaultBusinessProfilePlatforms],
 };
 
-const postTypeOptions = [
-  'General',
-  'Offer / CTA',
-  'Project Highlight',
-  'Before and After',
-  'Seasonal Reminder',
-  'Problem Solution',
-  'Trust / Local Proof',
-  'FAQ / Education',
-  'Neighborhood Focus',
-  'Preparation Tip',
-  'Review Request',
+const appNavItems: AppNavItem[] = [
+  { key: 'calendar', label: 'Calendar', description: '' },
+  { key: 'visibility-tools', label: 'Visibility Tools', description: '' },
+  { key: 'business-profile', label: 'Business Profile', description: '' },
+  { key: 'photo-library', label: 'Photo Library', description: '' },
+  { key: 'jobs-queues', label: 'Jobs + Queues', description: '' },
 ];
 
-type IconName = 'check' | 'copy' | 'download' | 'edit' | 'restore' | 'save' | 'skip' | 'trash' | 'x';
+const visibilityToolCards: VisibilityToolCard[] = [
+  {
+    id: 'local-reach-post',
+    title: 'Local Reach Post',
+    description:
+      'Generate a local post for Google Business, Facebook groups, Craigslist, neighborhood groups, or general copy/paste outreach.',
+    label: 'Local visibility',
+  },
+  {
+    id: 'review-request',
+    title: 'Review Request',
+    description: 'Generate a short message asking a past customer for a Google review.',
+    label: 'Reputation',
+  },
+  {
+    id: 'business-intro-post',
+    title: 'Business Intro Post',
+    description: 'Generate a local "hey neighbors" introduction post for a new business or new service area.',
+    label: 'Local intro',
+  },
+];
+
+const localReachDestinationOptions: LocalReachDestination[] = [
+  'Google Business Profile',
+  'Facebook Group',
+  'Craigslist',
+  'Neighborhood Group',
+  'General Social Post',
+];
+
+const localReachPostTypeOptions: LocalReachPostType[] = [
+  'Service promotion',
+  'Seasonal reminder',
+  'Recent project',
+  'Limited availability',
+  'New service area',
+  'Before/after post',
+  'Educational tip',
+];
+
+const localReachGoalOptions: LocalReachGoal[] = [
+  'Get estimate requests',
+  'Build trust',
+  'Show recent work',
+  'Announce availability',
+  'Improve local search visibility',
+];
+
+const localReachToneOptions: LocalReachTone[] = [
+  'Professional',
+  'Friendly neighbor',
+  'Simple/direct',
+  'Premium',
+  'Casual',
+];
+
+type IconName = 'check' | 'copy' | 'download' | 'edit' | 'menu' | 'restore' | 'save' | 'skip' | 'trash' | 'x';
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, JSX.Element> = {
@@ -326,6 +463,13 @@ function Icon({ name }: { name: IconName }) {
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
         <path d="M7 10l5 5 5-5" />
         <path d="M12 15V3" />
+      </>
+    ),
+    menu: (
+      <>
+        <path d="M4 6h16" />
+        <path d="M4 12h16" />
+        <path d="M4 18h16" />
       </>
     ),
     restore: (
@@ -397,10 +541,289 @@ function defaultWeeklyScheduleSettings(): WeeklyScheduleSettings {
   return {
     weekStartDate: getDefaultWeekStartDateInput(),
     contentDays: 5,
-    platforms: [...weeklySchedulePlatformOptions],
+    platforms: [...defaultWeeklySchedulePlatforms],
     contentTypes: [...weeklyScheduleContentTypeOptions],
     campaignTheme: defaultWeeklyCampaignTheme,
   };
+}
+
+function defaultManualPostSettings(): ManualPostSettings {
+  return {
+    scheduledDate: formatDateInputValue(new Date()),
+    title: '',
+    platforms: [...defaultWeeklySchedulePlatforms],
+    contentType: weeklyScheduleContentTypeOptions[0] ?? 'General',
+    campaignId: '',
+  };
+}
+
+function firstProfileValue(values: string[], fallback: string) {
+  return values.find((value) => value.trim())?.trim() || fallback;
+}
+
+function createDefaultVisibilityToolFormData(
+  toolId: VisibilityToolId,
+  profile: BusinessProfile,
+): VisibilityToolFormData {
+  const defaultService = firstProfileValue(profile.services_offered, 'Interior painting');
+  const defaultLocation = firstProfileValue(profile.service_area_cities, 'Oak Park');
+  const defaultCta = profile.primary_cta.trim() || 'Request a free estimate';
+
+  return {
+    destination: 'Google Business Profile',
+    postType: 'Service promotion',
+    goal: 'Get estimate requests',
+    serviceFocus: defaultService,
+    location: defaultLocation,
+    cta: defaultCta,
+    photoAssetId: '',
+    notes: '',
+    tone: toolId === 'review-request' ? 'Friendly and professional' : 'Friendly neighbor',
+    customerName: '',
+    jobCompleted: defaultService,
+    reviewLink: profile.website_url.trim(),
+    servicesToMention: profile.services_offered.slice(0, 3).join(', ') || defaultService,
+    businessBackground:
+      profile.brand_tone.trim() || 'Local, reliable, and focused on clean, professional work.',
+  };
+}
+
+function getVisibilityToolById(toolId: VisibilityToolId | null) {
+  if (!toolId) return null;
+  return visibilityToolCards.find((tool) => tool.id === toolId) ?? null;
+}
+
+function visibilityToolSupportsPhoto(toolId: VisibilityToolId) {
+  return toolId === 'local-reach-post';
+}
+
+function cleanSentencePart(value: string) {
+  return value.trim().replace(/[.!?]+$/g, '');
+}
+
+function formatVisibilityPhotoContext(asset: PhotoAsset | null) {
+  if (!asset) return '';
+  const details = [asset.service_type, asset.location, asset.category].filter(Boolean).join(', ');
+  return details
+    ? `Selected photo: ${asset.title} (${details})`
+    : `Selected photo: ${asset.title}`;
+}
+
+function formatVisibilityCta(profile: BusinessProfile, cta: string) {
+  const cleanCta = cleanSentencePart(cta || profile.primary_cta || 'Request a free estimate');
+  const website = profile.website_url.trim();
+  return website ? `${cleanCta}: ${website}` : cleanCta;
+}
+
+function lowerFirst(value: string) {
+  if (!value) return value;
+  return value.charAt(0).toLowerCase() + value.slice(1);
+}
+
+function localReachHook(
+  destination: LocalReachDestination,
+  postType: LocalReachPostType,
+  tone: string,
+  service: string,
+  location: string,
+) {
+  if (destination === 'Facebook Group' || destination === 'Neighborhood Group') {
+    if (postType === 'Recent project') return `Hey neighbors - we recently wrapped up a ${lowerFirst(service)} project near ${location}.`;
+    if (postType === 'Before/after post') return `Hey neighbors - sharing a quick before/after from a recent ${lowerFirst(service)} job around ${location}.`;
+    if (postType === 'Educational tip') return `Hey neighbors - quick tip for anyone in ${location} thinking about ${lowerFirst(service)}.`;
+    if (postType === 'Limited availability') return `Hey neighbors - we have a few openings coming up for ${lowerFirst(service)} around ${location}.`;
+    if (postType === 'New service area') return `Hey neighbors - we are now helping more homeowners around ${location} with ${lowerFirst(service)}.`;
+    if (postType === 'Seasonal reminder') return `Hey neighbors - this is a good time to think about ${lowerFirst(service)} before the season gets busy.`;
+    return `Hey neighbors - if ${lowerFirst(service)} is on your list, we are helping homeowners around ${location}.`;
+  }
+
+  if (destination === 'Craigslist') {
+    if (postType === 'Limited availability') return `Now booking ${lowerFirst(service)} in ${location}.`;
+    if (postType === 'Recent project') return `Recent ${lowerFirst(service)} work completed in ${location}.`;
+    return `${service} available in ${location}.`;
+  }
+
+  if (destination === 'Google Business Profile') {
+    if (postType === 'Educational tip') return `Planning ${lowerFirst(service)} in ${location}?`;
+    if (postType === 'Recent project') return `Recent ${lowerFirst(service)} work completed in ${location}.`;
+    if (postType === 'New service area') return `Now serving more homeowners in ${location}.`;
+    return `${service} for homeowners in ${location}.`;
+  }
+
+  if (tone === 'Premium') return `A clean, polished ${lowerFirst(service)} project can change how a home feels in ${location}.`;
+  if (tone === 'Simple/direct') return `${service} in ${location}, handled cleanly and reliably.`;
+  return `Thinking about ${lowerFirst(service)} in ${location}?`;
+}
+
+function localReachBody(
+  destination: LocalReachDestination,
+  postType: LocalReachPostType,
+  goal: LocalReachGoal,
+  tone: string,
+  businessName: string,
+  service: string,
+  location: string,
+  profile: BusinessProfile,
+  notes: string,
+  photoContext: string,
+) {
+  const profileTrust = profile.target_customer.trim()
+    ? `We work with ${profile.target_customer.toLowerCase()} who want dependable, neat work.`
+    : 'We focus on dependable, neat work and clear communication.';
+  const noteLine = notes ? ` ${cleanSentencePart(notes)}.` : '';
+  const photoLine = photoContext ? ` ${photoContext}.` : '';
+
+  if (destination === 'Google Business Profile') {
+    const searchIntent =
+      goal === 'Improve local search visibility'
+        ? `${businessName} helps local homeowners with ${lowerFirst(service)} in ${location} and nearby communities.`
+        : `${businessName} offers ${lowerFirst(service)} for homeowners in ${location} and the surrounding area.`;
+    return `${searchIntent} ${profileTrust}${photoLine}${noteLine}`;
+  }
+
+  if (destination === 'Facebook Group' || destination === 'Neighborhood Group') {
+    if (postType === 'Educational tip') {
+      return `Small prep details can make a big difference, from surface repair to the right finish. ${businessName} is happy to answer questions or take a look if anyone nearby is planning a project.${photoLine}${noteLine}`;
+    }
+    if (goal === 'Build trust') {
+      return `We try to keep the process straightforward: clear estimate, tidy work area, and a finish that fits the home. Happy to help if anyone nearby is comparing options.${photoLine}${noteLine}`;
+    }
+    if (goal === 'Show recent work') {
+      return `The goal was a cleaner, fresher look without making the process stressful for the homeowner. We are always glad to share project examples or take a look at a similar space.${photoLine}${noteLine}`;
+    }
+    return `No hard sell - just local help for anyone who wants a room, exterior, cabinets, trim, or drywall looking better. ${businessName} can take a look and point you in the right direction.${photoLine}${noteLine}`;
+  }
+
+  if (destination === 'Craigslist') {
+    const directOffer =
+      postType === 'Limited availability'
+        ? 'Limited upcoming openings are available for estimates and project scheduling.'
+        : 'Interior, exterior, cabinet, trim, and drywall-related painting work available.';
+    return `${businessName} provides reliable ${lowerFirst(service)} in ${location}. ${directOffer} Clear estimates, clean work, and service for local homeowners.${photoLine}${noteLine}`;
+  }
+
+  const toneLine =
+    tone === 'Premium'
+      ? 'The focus is a refined finish, careful prep, and a smoother experience from estimate to final walkthrough.'
+      : tone === 'Casual'
+        ? 'We keep things practical, clean, and easy to understand from the first look to the final touch-up.'
+        : 'We focus on clean prep, reliable scheduling, and a result that feels right for the home.';
+  return `${businessName} helps homeowners around ${location} with ${lowerFirst(service)}. ${toneLine}${photoLine}${noteLine}`;
+}
+
+function localReachShortVersion(
+  destination: LocalReachDestination,
+  businessName: string,
+  service: string,
+  location: string,
+  ctaLine: string,
+) {
+  if (destination === 'Facebook Group' || destination === 'Neighborhood Group') {
+    return `Hey neighbors - ${businessName} helps with ${lowerFirst(service)} around ${location}. Happy to take a look and give a free estimate.`;
+  }
+  if (destination === 'Craigslist') {
+    return `${service} in ${location}. Clean work, clear estimates, local service. ${ctaLine}`;
+  }
+  if (destination === 'Google Business Profile') {
+    return `${businessName} offers ${lowerFirst(service)} in ${location}. ${ctaLine}`;
+  }
+  return `${businessName} can help with ${lowerFirst(service)} in ${location}. ${ctaLine}`;
+}
+
+function localReachKeywords(
+  destination: LocalReachDestination,
+  service: string,
+  location: string,
+  profile: BusinessProfile,
+) {
+  const baseKeywords = [
+    `${service} ${location}`,
+    `${profile.business_name || defaultBusinessProfile.business_name}`,
+    `${location} painting contractor`,
+  ];
+  if (destination === 'Facebook Group' || destination === 'Neighborhood Group' || destination === 'General Social Post') {
+    return `${baseKeywords.join(', ')}\n#${service.replace(/\s+/g, '')} #${location.replace(/\s+/g, '')} #LocalBusiness`;
+  }
+  if (destination === 'Craigslist') {
+    return baseKeywords.concat(['free estimate', 'residential painting']).join(', ');
+  }
+  return baseKeywords.join(', ');
+}
+
+function buildLocalReachPostOutput(
+  formData: VisibilityToolFormData,
+  profile: BusinessProfile,
+  photoAsset: PhotoAsset | null,
+) {
+  const businessName = profile.business_name.trim() || defaultBusinessProfile.business_name;
+  const service = cleanSentencePart(formData.serviceFocus || firstProfileValue(profile.services_offered, 'painting services'));
+  const location = cleanSentencePart(formData.location || firstProfileValue(profile.service_area_cities, 'the local area'));
+  const ctaLine = formatVisibilityCta(profile, formData.cta);
+  const destination = formData.destination;
+  const postType = formData.postType;
+  const goal = formData.goal;
+  const tone = formData.tone || 'Friendly neighbor';
+  const photoContext = formatVisibilityPhotoContext(photoAsset);
+  const hook = localReachHook(destination, postType, tone, service, location);
+  const body = localReachBody(destination, postType, goal, tone, businessName, service, location, profile, formData.notes, photoContext);
+  const primaryPost =
+    destination === 'Craigslist'
+      ? `${hook}\n\n${body}\n\n${ctaLine}`
+      : `${hook} ${body}\n\n${ctaLine}`;
+  const shortVersion = localReachShortVersion(destination, businessName, service, location, ctaLine);
+  const keywords = localReachKeywords(destination, service, location, profile);
+
+  return [
+    'Primary post:',
+    primaryPost,
+    '',
+    'Short version:',
+    shortVersion,
+    '',
+    'CTA line:',
+    ctaLine,
+    '',
+    'Suggested local keywords or hashtags:',
+    keywords,
+  ].join('\n');
+}
+
+function buildVisibilityToolOutput(
+  toolId: VisibilityToolId,
+  formData: VisibilityToolFormData,
+  profile: BusinessProfile,
+  photoAsset: PhotoAsset | null,
+) {
+  const businessName = profile.business_name.trim() || defaultBusinessProfile.business_name;
+  const service = cleanSentencePart(formData.serviceFocus || firstProfileValue(profile.services_offered, 'painting services'));
+  const location = cleanSentencePart(formData.location || firstProfileValue(profile.service_area_cities, 'the local area'));
+  const ctaLine = formatVisibilityCta(profile, formData.cta);
+  const tone = formData.tone.toLowerCase();
+
+  if (toolId === 'local-reach-post') {
+    return buildLocalReachPostOutput(formData, profile, photoAsset);
+  }
+
+  if (toolId === 'review-request') {
+    const customerName = cleanSentencePart(formData.customerName || 'there');
+    const jobCompleted = cleanSentencePart(formData.jobCompleted || service);
+    const reviewLink = formData.reviewLink.trim();
+    if (tone.includes('short')) {
+      return `Hi ${customerName}, thank you for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you leave us a Google review? ${reviewLink || ctaLine}`;
+    }
+    if (tone.includes('warm')) {
+      return `Hi ${customerName}, it was a pleasure helping with ${jobCompleted}. Thank you again for trusting ${businessName}. If you have a minute, a Google review would mean a lot and helps other local homeowners find us. ${reviewLink || ctaLine}`;
+    }
+    return `Hi ${customerName}, thank you again for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you be willing to leave us a Google review? It helps local homeowners feel confident reaching out. ${reviewLink || ctaLine}`;
+  }
+
+  if (toolId === 'business-intro-post') {
+    const services = cleanSentencePart(formData.servicesToMention || service);
+    const background = cleanSentencePart(formData.businessBackground || profile.brand_tone);
+    return `Hey neighbors - we are ${businessName}, a local ${profile.industry.toLowerCase()} business serving ${location}. We help with ${services}. ${background}. If you are planning a project nearby, ${ctaLine}.`;
+  }
+
+  return '';
 }
 
 function parseEditableProfileList(value: string) {
@@ -470,16 +893,10 @@ function isPhotoAssetQuality(value: unknown): value is PhotoAssetQuality {
   return value === 'standard' || value === 'strong' || value === 'hero';
 }
 
-function normalizePhotoAsset(rawAsset: Partial<PhotoAsset> | null | undefined): PhotoAsset | null {
-  if (!rawAsset?.id || !rawAsset.title || (!rawAsset.image_data && !rawAsset.image_url)) return null;
-  const usedCount =
-    typeof rawAsset.used_count === 'number' && Number.isFinite(rawAsset.used_count) && rawAsset.used_count >= 0
-      ? rawAsset.used_count
-      : 0;
-
+function normalizeStoredPhotoAssetPayload(rawAsset: StoredPhotoAssetPayload | null | undefined): PhotoAssetPayload | null {
+  if (!rawAsset?.title || (!rawAsset.image_data && !rawAsset.image_url && !rawAsset.image_path)) return null;
   return {
-    id: rawAsset.id,
-    business_name: rawAsset.business_name?.trim() || defaultBusinessProfile.business_name,
+    business_id: rawAsset.business_id?.trim() || null,
     image_url: rawAsset.image_url?.trim() || null,
     image_data: rawAsset.image_data || null,
     image_filename: rawAsset.image_filename?.trim() || null,
@@ -490,9 +907,6 @@ function normalizePhotoAsset(rawAsset: Partial<PhotoAsset> | null | undefined): 
     location: rawAsset.location?.trim() || '',
     tags: (rawAsset.tags ?? []).map((tag) => tag.trim()).filter(Boolean),
     quality: isPhotoAssetQuality(rawAsset.quality) ? rawAsset.quality : 'standard',
-    used_count: usedCount,
-    created_at: rawAsset.created_at || new Date().toISOString(),
-    updated_at: rawAsset.updated_at || rawAsset.created_at || new Date().toISOString(),
   };
 }
 
@@ -505,21 +919,17 @@ function loadStoredPhotoAssets() {
     const parsedAssets = JSON.parse(storedAssets) as unknown;
     if (!Array.isArray(parsedAssets)) return [];
     return parsedAssets
-      .map((asset) => normalizePhotoAsset(asset as Partial<PhotoAsset>))
-      .filter((asset): asset is PhotoAsset => Boolean(asset));
+      .map((asset) => normalizeStoredPhotoAssetPayload(asset as StoredPhotoAssetPayload))
+      .filter((asset): asset is PhotoAssetPayload => Boolean(asset));
   } catch {
     return [];
   }
 }
 
-function storePhotoAssets(assets: PhotoAsset[]) {
-  // TODO: Replace localStorage/base64 storage with backend PhotoAsset rows plus durable object storage.
-  window.localStorage.setItem(photoLibraryStorageKey, JSON.stringify(assets));
-}
-
 function createEmptyPhotoAssetDraft(): PhotoAssetDraft {
   return {
     image_url: null,
+    image_path: null,
     image_data: null,
     image_filename: null,
     title: '',
@@ -535,7 +945,8 @@ function createEmptyPhotoAssetDraft(): PhotoAssetDraft {
 function createPhotoAssetDraft(asset: PhotoAsset): PhotoAssetDraft {
   return {
     image_url: asset.image_url,
-    image_data: asset.image_data,
+    image_path: asset.image_path,
+    image_data: null,
     image_filename: asset.image_filename,
     title: asset.title,
     description: asset.description,
@@ -559,7 +970,15 @@ function normalizePhotoTags(value: string) {
 }
 
 function getPhotoAssetImageSource(asset: PhotoAsset | PhotoAssetDraft) {
-  return asset.image_data || asset.image_url;
+  const imageData = 'image_data' in asset ? asset.image_data : null;
+  return imageData || asset.image_path || asset.image_url;
+}
+
+function getPhotoAssetPreviewUrl(asset: PhotoAsset | PhotoAssetDraft) {
+  const imageSource = getPhotoAssetImageSource(asset);
+  if (!imageSource) return null;
+  if (/^(data:|https?:\/\/)/i.test(imageSource)) return imageSource;
+  return getMediaUrl(imageSource);
 }
 
 function getPhotoAssetQualityLabel(quality: PhotoAssetQuality) {
@@ -574,10 +993,6 @@ function formatPhotoAssetDate(value: string) {
     day: 'numeric',
     year: 'numeric',
   }).format(date);
-}
-
-function createPhotoAssetId() {
-  return `photo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function readFileAsDataUrl(file: File) {
@@ -632,7 +1047,7 @@ async function fileToPhotoAssetImage(file: File) {
   }
 
   if (storedDataUrl.length > maxPhotoAssetDataUrlLength) {
-    throw new Error('This image is too large for the local Photo Library MVP. Use a smaller image for now.');
+    throw new Error('This image is too large to upload through the current Photo Library API. Use a smaller image for now.');
   }
 
   return {
@@ -645,7 +1060,7 @@ function selectPhotoAssetsForGeneratedPost(
   assets: PhotoAsset[],
   criteria: { category?: PhotoAssetCategory; serviceType?: string; tags?: string[] },
 ) {
-  // TODO: Wire this selector into weekly post generation after PhotoAsset backend persistence exists.
+  // Frontend mirror for preview counts; backend generation performs the authoritative asset selection.
   const serviceType = criteria.serviceType?.trim().toLowerCase();
   const requestedTags = new Set((criteria.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean));
   return assets.filter((asset) => {
@@ -732,6 +1147,90 @@ function getCampaignItemImageFilename(item: CampaignContentQueueItem) {
   } catch {
     return imageSource.split('/').filter(Boolean).pop() || `${item.content_id}.jpg`;
   }
+}
+
+function normalizeImageReference(value: string | null | undefined) {
+  const trimmedValue = value?.trim();
+  if (!trimmedValue) return null;
+
+  try {
+    const parsedUrl = new URL(trimmedValue, typeof window === 'undefined' ? 'http://localhost' : window.location.origin);
+    return /^https?:\/\//i.test(trimmedValue)
+      ? `${parsedUrl.origin}${parsedUrl.pathname}`.toLowerCase()
+      : parsedUrl.pathname.toLowerCase();
+  } catch {
+    return trimmedValue.split(/[?#]/, 1)[0].toLowerCase();
+  }
+}
+
+function imageFilenameFromSource(value: string | null | undefined) {
+  const normalizedReference = normalizeImageReference(value);
+  return normalizedReference?.split('/').filter(Boolean).pop() ?? null;
+}
+
+function isPhotoLibraryImageSource(value: string | null | undefined) {
+  return normalizeImageReference(value)?.includes('/media/photo-assets/') ?? false;
+}
+
+function getPhotoAssetImageFilename(asset: PhotoAsset) {
+  return asset.image_filename || imageFilenameFromSource(asset.image_path || asset.image_url);
+}
+
+function findPhotoAssetByImage(
+  assets: PhotoAsset[],
+  imageSource: string | null | undefined,
+  imageFilename: string | null | undefined,
+) {
+  const sourceReference = normalizeImageReference(imageSource);
+  const filenameReference = normalizeImageReference(imageFilename);
+  const directMatch = assets.find((asset) => {
+    const assetPathReference = normalizeImageReference(asset.image_path);
+    const assetUrlReference = normalizeImageReference(asset.image_url);
+    return Boolean(
+      sourceReference &&
+        (sourceReference === assetPathReference || sourceReference === assetUrlReference),
+    );
+  });
+  if (directMatch) return directMatch;
+
+  if (!isPhotoLibraryImageSource(imageSource) || !filenameReference) return null;
+  return (
+    assets.find((asset) => {
+      const assetFilename = normalizeImageReference(getPhotoAssetImageFilename(asset));
+      return Boolean(assetFilename && assetFilename === filenameReference);
+    }) ?? null
+  );
+}
+
+function getCampaignItemPhotoAsset(item: CampaignContentQueueItem, assets: PhotoAsset[]) {
+  return findPhotoAssetByImage(assets, getCampaignItemImageSource(item), item.image_filename);
+}
+
+function getContentSlotPhotoAsset(slot: ContentSlot, assets: PhotoAsset[]) {
+  for (const item of slot.sourceItems) {
+    const asset = getCampaignItemPhotoAsset(item, assets);
+    if (asset) return asset;
+  }
+  return findPhotoAssetByImage(assets, slot.imageSource, imageFilenameFromSource(slot.imageSource));
+}
+
+function contentSlotUsesPhotoLibrary(slot: ContentSlot, assets: PhotoAsset[]) {
+  return Boolean(
+    getContentSlotPhotoAsset(slot, assets) ||
+      slot.sourceItems.some((item) => isPhotoLibraryImageSource(getCampaignItemImageSource(item))) ||
+      isPhotoLibraryImageSource(slot.imageSource),
+  );
+}
+
+function photoAssetImageUpdatePayload(asset: PhotoAsset) {
+  const imageSource = getPhotoAssetImageSource(asset);
+  if (!imageSource) return null;
+
+  return {
+    image_filename: getPhotoAssetImageFilename(asset) ?? `${asset.id}.jpg`,
+    image_path: asset.image_path,
+    image_url: asset.image_url,
+  };
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -860,6 +1359,46 @@ function getContentSlotStatusSummary(items: CampaignContentQueueItem[]) {
   return entries.map(([status, count]) => `${count} ${status}`).join(' · ');
 }
 
+function normalizeStatus(status: string) {
+  return status.trim().toLowerCase();
+}
+
+function isPublishedPlanningStatus(status: string) {
+  const normalizedStatus = normalizeStatus(status);
+  return normalizedStatus === 'posted' || normalizedStatus === 'published';
+}
+
+function isDraftPlanningStatus(status: string) {
+  return normalizeStatus(status) === 'draft';
+}
+
+function isReadyPlanningStatus(status: string) {
+  const normalizedStatus = normalizeStatus(status);
+  return normalizedStatus === 'approved' || normalizedStatus === 'ready' || normalizedStatus === 'scheduled';
+}
+
+function isNeedsReviewPlanningStatus(status: string) {
+  return normalizeStatus(status) === 'needs review';
+}
+
+function isFailedPlanningStatus(status: string) {
+  const normalizedStatus = normalizeStatus(status);
+  return normalizedStatus.includes('failed') || normalizedStatus.includes('error');
+}
+
+function isActionablePlanningStatus(status: string) {
+  const normalizedStatus = normalizeStatus(status);
+  return normalizedStatus !== 'posted' && normalizedStatus !== 'published' && normalizedStatus !== 'skipped';
+}
+
+function formatCalendarPlatformShortLabel(platform: CalendarPlatform) {
+  if (platform === 'Facebook') return 'FB';
+  if (platform === 'Instagram') return 'IG';
+  if (platform === 'Google Business') return 'Google';
+  if (platform === 'Facebook Groups') return 'Groups';
+  return platform;
+}
+
 function getCalendarPlatformsForItem(item: CampaignContentQueueItem): CalendarPlatform[] {
   if (item.platform === 'Meta Dual' || item.platform === 'Facebook Page') return ['Facebook', 'Instagram'];
   if (item.platform === 'Facebook') return ['Facebook'];
@@ -885,6 +1424,111 @@ function buildPlatformPosts(items: CampaignContentQueueItem[]): PlatformPost[] {
       if (platformCompare !== 0) return platformCompare;
       return a.item.content_id.localeCompare(b.item.content_id);
     });
+}
+
+function getPlatformPostsForStatus(slot: ContentSlot, platform: CalendarPlatform) {
+  return slot.platformPosts.filter((post) => {
+    return post.platform === platform;
+  });
+}
+
+function summarizePlatformStatus(posts: PlatformPost[]) {
+  if (posts.length === 0) return 'Missing';
+
+  const statuses = posts.map((post) => getPlanningStatus(post.item));
+  if (statuses.some(isFailedPlanningStatus)) return 'Failed';
+  if (statuses.some(isNeedsReviewPlanningStatus)) return 'Needs Review';
+  if (statuses.every(isPublishedPlanningStatus)) return 'Posted';
+  if (statuses.every((status) => normalizeStatus(status) === 'scheduled')) return 'Scheduled';
+  if (statuses.every(isReadyPlanningStatus)) return 'Approved';
+  if (statuses.every(isDraftPlanningStatus)) return 'Draft';
+  if (statuses.some(isDraftPlanningStatus)) return 'Draft';
+  return 'Mixed';
+}
+
+function getPlatformStatusRows(slot: ContentSlot): PlatformStatusRow[] {
+  return coreCalendarPlatforms.map((platform) => ({
+    platform,
+    label: formatCalendarPlatformShortLabel(platform),
+    status: summarizePlatformStatus(getPlatformPostsForStatus(slot, platform)),
+  }));
+}
+
+function getContentSlotPlatformLabels(slot: ContentSlot) {
+  const platformLabels = new Map<CalendarPlatform, string>();
+  for (const post of slot.platformPosts) {
+    platformLabels.set(post.platform, formatCalendarPlatformShortLabel(post.platform));
+  }
+
+  return Array.from(platformLabels.entries())
+    .sort(([a], [b]) => calendarPlatformOrder[a] - calendarPlatformOrder[b])
+    .map(([platform, label]) => ({ platform, label }));
+}
+
+function getCollapsedContentSlotStatus(slot: ContentSlot) {
+  const statuses = slot.platformPosts.map((post) => getPlanningStatus(post.item));
+  const platformCount = slot.platformPosts.length;
+  const platformLabel = `${platformCount} platform${platformCount === 1 ? '' : 's'}`;
+
+  if (statuses.length === 0) {
+    return { label: 'Missing', status: 'Missing', detail: 'No platforms' };
+  }
+  if (statuses.some(isFailedPlanningStatus)) {
+    return { label: 'Needs attention', status: 'Needs Attention', detail: platformLabel };
+  }
+  if (statuses.some(isNeedsReviewPlanningStatus)) {
+    return { label: 'Needs review', status: 'Needs Review', detail: platformLabel };
+  }
+  if (statuses.some(isDraftPlanningStatus)) {
+    const draftCount = statuses.filter(isDraftPlanningStatus).length;
+    return {
+      label: 'Draft',
+      status: 'Draft',
+      detail: draftCount === platformCount ? platformLabel : `${draftCount} draft / ${platformLabel}`,
+    };
+  }
+  if (statuses.every(isPublishedPlanningStatus)) {
+    return { label: 'Posted', status: 'Posted', detail: platformLabel };
+  }
+  if (statuses.every(isReadyPlanningStatus)) {
+    return { label: 'Ready', status: 'Ready', detail: platformLabel };
+  }
+
+  return { label: slot.statusSummary, status: slot.statusSummary, detail: platformLabel };
+}
+
+function buildWeeklyActionSummary(slots: ContentSlot[]): WeeklyActionSummary {
+  const actionCounts = coreCalendarPlatforms.reduce(
+    (counts, platform) => {
+      counts[platform] = 0;
+      return counts;
+    },
+    {} as Record<CalendarPlatform, number>,
+  );
+  const statuses = slots.flatMap((slot) =>
+    slot.platformPosts.map((post) => {
+      const status = getPlanningStatus(post.item);
+      if (coreCalendarPlatforms.includes(post.platform as WeeklySchedulePlatform) && isActionablePlanningStatus(status)) {
+        actionCounts[post.platform] = (actionCounts[post.platform] ?? 0) + 1;
+      }
+      return status;
+    }),
+  );
+
+  return {
+    totalPlatformPosts: statuses.length,
+    publishedCount: statuses.filter(isPublishedPlanningStatus).length,
+    draftCount: statuses.filter(isDraftPlanningStatus).length,
+    needsReviewCount: statuses.filter(isNeedsReviewPlanningStatus).length,
+    failedCount: statuses.filter(isFailedPlanningStatus).length,
+    readyCount: statuses.filter(isReadyPlanningStatus).length,
+    contentSlotCount: slots.length,
+    actionByPlatform: coreCalendarPlatforms.map((platform) => ({
+      platform,
+      label: formatCalendarPlatformShortLabel(platform),
+      count: actionCounts[platform] ?? 0,
+    })),
+  };
 }
 
 function buildContentSlots(items: CampaignContentQueueItem[]): ContentSlot[] {
@@ -960,7 +1604,6 @@ function buildWeeklyCampaignCalendars(items: CampaignContentQueueItem[]): Weekly
 
 function getPlatformBadgeState(slot: ContentSlot, platform: CalendarPlatform) {
   return slot.platformPosts.some((post) => {
-    if (platform === 'Facebook') return post.platform === 'Facebook' || post.platform === 'Facebook Groups';
     return post.platform === platform;
   });
 }
@@ -984,6 +1627,7 @@ function isMetaPlatform(platform: CampaignContentQueueItem['platform']) {
 
 function isCampaignItemPublishable(item: CampaignContentQueueItem) {
   if (
+    item.platform === 'Facebook Groups' ||
     item.status === 'Rejected' ||
     item.status === 'Needs Review' ||
     item.status === 'Draft' ||
@@ -1051,6 +1695,48 @@ function getCalendarSundayStartDateInput(weekStartDate: string) {
   return formatUtcDateInputValue(sundayDate);
 }
 
+function getCalendarWeekStartDateForDateInput(dateInput: string) {
+  const referenceDate = parseDateInputAsUtc(dateInput) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
+  if (!referenceDate) return getDefaultWeekStartDateInput();
+
+  const day = referenceDate.getUTCDay();
+  const offsetToMonday = day === 0 ? 1 : 1 - day;
+  const weekStartDate = new Date(referenceDate);
+  weekStartDate.setUTCDate(referenceDate.getUTCDate() + offsetToMonday);
+  return formatUtcDateInputValue(weekStartDate);
+}
+
+function dateInputToScheduledAt(dateInput: string) {
+  const scheduledDate = parseDateInputAsUtc(dateInput);
+  if (!scheduledDate) return null;
+
+  scheduledDate.setUTCHours(15, 0, 0, 0);
+  return scheduledDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function manualPostRequestPlatforms(platforms: WeeklySchedulePlatform[]): CampaignContentQueueItem['platform'][] {
+  const requestPlatforms: CampaignContentQueueItem['platform'][] = [];
+  const wantsMeta = platforms.includes('Facebook') || platforms.includes('Instagram');
+
+  if (wantsMeta) {
+    requestPlatforms.push(
+      platforms.includes('Facebook') && platforms.includes('Instagram')
+        ? 'Meta Dual'
+        : platforms.includes('Facebook')
+          ? 'Facebook'
+          : 'Instagram',
+    );
+  }
+  if (platforms.includes('Google Business')) {
+    requestPlatforms.push('Google Business');
+  }
+  if (platforms.includes('Facebook Groups')) {
+    requestPlatforms.push('Facebook Groups');
+  }
+
+  return requestPlatforms;
+}
+
 function getWeekdayDateInputValue(weekStartDate: string, dayIndex: number) {
   const calendarStart = parseDateInputAsUtc(getCalendarSundayStartDateInput(weekStartDate));
   if (!calendarStart) return getDefaultWeekStartDateInput();
@@ -1086,6 +1772,14 @@ function moveContentSlotItemsToDay(
 
 function deleteContentSlotItems(items: CampaignContentQueueItem[], contentIds: Set<string>) {
   return items.filter((item) => !contentIds.has(item.content_id));
+}
+
+function updateContentSlotItemsImage(
+  items: CampaignContentQueueItem[],
+  contentIds: Set<string>,
+  imagePayload: Pick<CampaignContentQueueItem, 'image_filename' | 'image_path' | 'image_url'>,
+) {
+  return items.map((item) => (contentIds.has(item.content_id) ? { ...item, ...imagePayload } : item));
 }
 
 function renderGoogleBusinessPublishStatus(item: CampaignContentQueueItem) {
@@ -1185,16 +1879,23 @@ function App() {
   const [activeSection, setActiveSection] = useState<AppSection>('calendar');
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
+  const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
+  const [selectedVisibilityToolId, setSelectedVisibilityToolId] = useState<VisibilityToolId | null>(null);
+  const [visibilityToolFormData, setVisibilityToolFormData] = useState<VisibilityToolFormData>(() =>
+    createDefaultVisibilityToolFormData('local-reach-post', loadStoredBusinessProfile()),
+  );
+  const [visibilityToolOutput, setVisibilityToolOutput] = useState('');
+  const [visibilityToolError, setVisibilityToolError] = useState<string | null>(null);
+  const [visibilityToolGenerating, setVisibilityToolGenerating] = useState(false);
+  const [visibilityToolCopied, setVisibilityToolCopied] = useState(false);
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null);
   const [scheduleInputs, setScheduleInputs] = useState<Record<string, string>>({});
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [draftTextEdits, setDraftTextEdits] = useState<Record<string, string>>({});
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
-  const [manualPlatform, setManualPlatform] =
-    useState<CampaignContentQueueItem['platform']>('Google Business');
-  const [manualPostType, setManualPostType] = useState('General');
-  const [includeFacebookGroups, setIncludeFacebookGroups] = useState(false);
-  const [showGeneratePostOptions, setShowGeneratePostOptions] = useState(false);
+  const [manualPostSettings, setManualPostSettings] = useState<ManualPostSettings>(() => defaultManualPostSettings());
+  const [showManualPostModal, setShowManualPostModal] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [showWeeklyScheduleModal, setShowWeeklyScheduleModal] = useState(false);
   const [calendarWeekStartDate, setCalendarWeekStartDate] = useState(() => getDefaultWeekStartDateInput());
   const [weeklyScheduleSettings, setWeeklyScheduleSettings] = useState<WeeklyScheduleSettings>(() =>
@@ -1209,6 +1910,7 @@ function App() {
   );
   const [calendarDrag, setCalendarDrag] = useState<CalendarDragState | null>(null);
   const [pendingDeleteContentSlotId, setPendingDeleteContentSlotId] = useState<string | null>(null);
+  const [photoPickerContentSlotId, setPhotoPickerContentSlotId] = useState<string | null>(null);
   const [postAssistantItem, setPostAssistantItem] = useState<CampaignContentQueueItem | null>(null);
   const [postAssistantCopiedAction, setPostAssistantCopiedAction] = useState<PostAssistantCopiedAction>(null);
   const [postAssistantError, setPostAssistantError] = useState<string | null>(null);
@@ -1274,10 +1976,19 @@ function App() {
     }
   }, [calendarWeekStartDate]);
 
+  const loadPhotoAssets = useCallback(async () => {
+    try {
+      setPhotoAssets(await getPhotoAssets(defaultPhotoAssetBusinessId));
+    } catch (err) {
+      setWarning(err instanceof Error ? `Photo Library metadata unavailable. ${err.message}` : 'Photo Library metadata unavailable.');
+    }
+  }, []);
+
   useEffect(() => {
     void loadCampaigns();
     void loadWeeklyQueue();
-  }, [loadCampaigns, loadWeeklyQueue]);
+    void loadPhotoAssets();
+  }, [loadCampaigns, loadPhotoAssets, loadWeeklyQueue]);
 
   useEffect(() => {
     if (activeSection !== 'jobs-queues') return;
@@ -1388,6 +2099,10 @@ function App() {
     }));
   }, [weeklyContentSlots]);
 
+  const weeklyActionSummary = useMemo(() => {
+    return buildWeeklyActionSummary(weeklyContentSlots);
+  }, [weeklyContentSlots]);
+
   const selectedContentSlot = useMemo(() => {
     if (!selectedContentSlotId) return null;
     return weeklyContentSlots.find((slot) => slot.id === selectedContentSlotId) ?? null;
@@ -1397,6 +2112,11 @@ function App() {
     if (!pendingDeleteContentSlotId) return null;
     return weeklyContentSlots.find((slot) => slot.id === pendingDeleteContentSlotId) ?? null;
   }, [pendingDeleteContentSlotId, weeklyContentSlots]);
+
+  const photoPickerContentSlot = useMemo(() => {
+    if (!photoPickerContentSlotId) return null;
+    return weeklyContentSlots.find((slot) => slot.id === photoPickerContentSlotId) ?? null;
+  }, [photoPickerContentSlotId, weeklyContentSlots]);
 
   const previousWeeklyPosts = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status === 'Posted' || item.status === 'Skipped');
@@ -1475,9 +2195,87 @@ function App() {
       return Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue()]);
     }
     if (activeSection === 'calendar') {
-      return Promise.all([loadCampaigns(), loadWeeklyQueue()]);
+      return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets()]);
+    }
+    if (activeSection === 'visibility-tools') {
+      return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets()]);
+    }
+    if (activeSection === 'photo-library') {
+      return loadPhotoAssets();
     }
     return Promise.resolve();
+  }
+
+  function openVisibilityTool(toolId: VisibilityToolId) {
+    setSelectedVisibilityToolId(toolId);
+    setVisibilityToolFormData(createDefaultVisibilityToolFormData(toolId, businessProfile));
+    setVisibilityToolOutput('');
+    setVisibilityToolError(null);
+    setVisibilityToolCopied(false);
+  }
+
+  function closeVisibilityTool() {
+    setSelectedVisibilityToolId(null);
+    setVisibilityToolOutput('');
+    setVisibilityToolError(null);
+    setVisibilityToolCopied(false);
+    setVisibilityToolGenerating(false);
+  }
+
+  function updateVisibilityToolFormData(field: keyof VisibilityToolFormData, value: string) {
+    setVisibilityToolFormData((current) => ({
+      ...current,
+      [field]: value,
+    }));
+    setVisibilityToolError(null);
+    setVisibilityToolCopied(false);
+  }
+
+  async function handleGenerateVisibilityTool() {
+    if (!selectedVisibilityToolId) return;
+
+    setVisibilityToolGenerating(true);
+    setVisibilityToolError(null);
+    setVisibilityToolCopied(false);
+
+    try {
+      const selectedAsset =
+        photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+      const generatedText = buildVisibilityToolOutput(
+        selectedVisibilityToolId,
+        visibilityToolFormData,
+        businessProfile,
+        selectedAsset,
+      );
+      setVisibilityToolOutput(generatedText);
+    } catch (err) {
+      setVisibilityToolError(err instanceof Error ? err.message : 'Unable to generate this visibility tool.');
+    } finally {
+      setVisibilityToolGenerating(false);
+    }
+  }
+
+  async function handleCopyVisibilityToolOutput() {
+    setVisibilityToolError(null);
+
+    try {
+      if (!visibilityToolOutput.trim()) {
+        throw new Error('Generate an output before copying.');
+      }
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API is not available.');
+      }
+
+      await navigator.clipboard.writeText(visibilityToolOutput);
+      setVisibilityToolCopied(true);
+      window.setTimeout(() => setVisibilityToolCopied(false), 1800);
+    } catch (err) {
+      setVisibilityToolError(
+        err instanceof Error && err.message
+          ? `Unable to copy output. ${err.message}`
+          : 'Unable to copy output. Check browser clipboard permissions and try again.',
+      );
+    }
   }
 
   function openWeeklyScheduleModal() {
@@ -1491,6 +2289,18 @@ function App() {
           : current.campaignTheme,
     }));
     setShowWeeklyScheduleModal(true);
+  }
+
+  function openManualPostModal() {
+    const profilePlatforms = weeklyPlatformsFromBusinessProfile(businessProfile);
+    setManualPostSettings((current) => ({
+      ...current,
+      campaignId: selectedCampaignId,
+      platforms: profilePlatforms.length > 0 ? profilePlatforms : current.platforms,
+      scheduledDate: current.scheduledDate || formatDateInputValue(new Date()),
+      contentType: current.contentType || weeklyScheduleContentTypeOptions[0] || 'General',
+    }));
+    setShowManualPostModal(true);
   }
 
   function handleSaveBusinessProfile() {
@@ -1626,7 +2436,7 @@ function App() {
         business_profile: businessProfile,
       });
       setCalendarWeekStartDate(settings.weekStartDate);
-      await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue()]);
+      await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue(), loadPhotoAssets()]);
       setShowWeeklyScheduleModal(false);
       setWarning(
         result.existing
@@ -1642,19 +2452,57 @@ function App() {
     }
   }
 
-  async function handleGenerateManualPost() {
+  async function handleGenerateManualPost(settings: ManualPostSettings) {
+    if (!settings.scheduledDate) {
+      setError('Choose a date for the post.');
+      return;
+    }
+    if (settings.platforms.length === 0) {
+      setError('Choose at least one platform for the post.');
+      return;
+    }
+    if (!settings.contentType.trim()) {
+      setError('Choose a content type for the post.');
+      return;
+    }
+
+    const scheduledAt = dateInputToScheduledAt(settings.scheduledDate);
+    if (!scheduledAt) {
+      setError('Choose a valid post date.');
+      return;
+    }
+
+    const requestPlatforms = manualPostRequestPlatforms(settings.platforms);
+    if (requestPlatforms.length === 0) {
+      setError('Choose at least one supported platform for the post.');
+      return;
+    }
+
     setBusyAction('generate-manual-post');
     setError(null);
     setWarning(null);
     try {
-      const result = await generateManualSocialPost({
-        campaign_id: selectedCampaignId || null,
-        platform: manualPlatform,
-        post_type: manualPostType,
-        business_profile: businessProfile,
-      });
-      await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
-      setWarning(`Generated ${result.queue_items.length} additional post.`);
+      const postType = settings.title.trim()
+        ? `${settings.contentType.trim()}: ${settings.title.trim()}`
+        : settings.contentType.trim();
+      const results = await Promise.all(
+        requestPlatforms.map((platform) =>
+          generateManualSocialPost({
+            campaign_id: settings.campaignId || null,
+            platform,
+            post_type: postType,
+            business_profile: businessProfile,
+          }),
+        ),
+      );
+      const generatedItems = results.flatMap((result) => result.queue_items);
+      await Promise.all(generatedItems.map((item) => updatePostScheduledAt(item.content_id, scheduledAt)));
+      const targetWeekStart = getCalendarWeekStartDateForDateInput(settings.scheduledDate);
+      setSelectedCampaignId(settings.campaignId);
+      setCalendarWeekStartDate(targetWeekStart);
+      await Promise.all([loadWeeklyQueue(targetWeekStart), loadCampaignQueue(), loadPhotoAssets()]);
+      setShowManualPostModal(false);
+      setWarning(`Generated ${generatedItems.length} post${generatedItems.length === 1 ? '' : 's'} for ${settings.scheduledDate}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate a post.');
     } finally {
@@ -1896,6 +2744,48 @@ function App() {
     } catch (err) {
       setWeeklyQueue(previousWeeklyQueue);
       setError(err instanceof Error ? err.message : 'Unable to move content slot.');
+    }
+  }
+
+  function openPhotoPicker(slot: ContentSlot) {
+    setPhotoPickerContentSlotId(slot.id);
+    setError(null);
+    setWarning(null);
+    void loadPhotoAssets();
+  }
+
+  async function handleSelectPhotoAssetForSlot(slot: ContentSlot, asset: PhotoAsset) {
+    const imagePayload = photoAssetImageUpdatePayload(asset);
+    if (!imagePayload) {
+      setError('This Photo Library asset does not have a usable image.');
+      return;
+    }
+
+    const previousWeeklyQueue = weeklyQueue;
+    const contentIds = new Set(slot.sourceItems.map((item) => item.content_id));
+    const actionKey = `change-photo:${slot.id}`;
+
+    setBusyAction(actionKey);
+    setError(null);
+    setWarning(null);
+    setWeeklyQueue((current) => updateContentSlotItemsImage(current, contentIds, imagePayload));
+    setPostAssistantItem((current) => (current && contentIds.has(current.content_id) ? { ...current, ...imagePayload } : current));
+
+    try {
+      await Promise.all(slot.sourceItems.map((item) => updatePostImage(item.content_id, imagePayload)));
+      await loadWeeklyQueue(calendarWeekStartDate);
+      setPhotoPickerContentSlotId(null);
+      setWarning(`Changed "${slot.title}" to Photo Library asset "${asset.title}".`);
+    } catch (err) {
+      setWeeklyQueue(previousWeeklyQueue);
+      setPostAssistantItem((current) => {
+        if (!current || !contentIds.has(current.content_id)) return current;
+        const previousItem = previousWeeklyQueue.find((item) => item.content_id === current.content_id);
+        return previousItem ?? current;
+      });
+      setError(err instanceof Error ? err.message : 'Unable to change the content slot photo.');
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -2363,40 +3253,98 @@ function App() {
   }
 
   const postAssistantImageSource = postAssistantItem ? getCampaignItemImageSource(postAssistantItem) : null;
+  const postAssistantContentSlot = postAssistantItem
+    ? weeklyContentSlots.find((slot) => slot.sourceItems.some((item) => item.content_id === postAssistantItem.content_id)) ?? null
+    : null;
+  const postAssistantPhotoAsset = postAssistantItem
+    ? getCampaignItemPhotoAsset(postAssistantItem, photoAssets) ??
+      (postAssistantContentSlot ? getContentSlotPhotoAsset(postAssistantContentSlot, photoAssets) : null)
+    : null;
+  const postAssistantUsesPhotoLibrary = Boolean(
+    postAssistantPhotoAsset ||
+      isPhotoLibraryImageSource(postAssistantImageSource) ||
+      (postAssistantContentSlot && contentSlotUsesPhotoLibrary(postAssistantContentSlot, photoAssets)),
+  );
+  const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId);
+  const selectedVisibilityPhotoAsset =
+    photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+  const activeNavIndex = Math.max(
+    appNavItems.findIndex((item) => item.key === activeSection),
+    0,
+  );
+  const activeNavItem = appNavItems[activeNavIndex] ?? appNavItems[0];
+  const sidebarNavStyle = {
+    '--active-index': activeNavIndex,
+  } as CSSProperties & Record<'--active-index', number>;
+  const businessSubtitle = businessProfile.business_name
+    ? `${businessProfile.business_name} content operations`
+    : 'Marom Painting content operations';
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <h1>Gomez Ops</h1>
-          <p>{businessProfile.business_name} content operations</p>
+    <div className="app-shell">
+      <aside className={`app-sidebar ${mobileNavOpen ? 'app-sidebar-open' : ''}`} aria-label="GomezOps navigation">
+        <div className="sidebar-brand">
+          <span>GomezOps</span>
         </div>
-        <div className="topbar-actions">
-          <nav className="app-nav" aria-label="Primary">
-            {[
-              ['calendar', 'Calendar'],
-              ['business-profile', 'Business Profile'],
-              ['photo-library', 'Photo Library'],
-              ['jobs-queues', 'Jobs + Queues'],
-            ].map(([sectionKey, label]) => (
-              <button
-                className={activeSection === sectionKey ? 'active' : ''}
-                key={sectionKey}
-                type="button"
-                onClick={() => setActiveSection(sectionKey as AppSection)}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
+        <nav className="sidebar-nav" style={sidebarNavStyle} aria-label="Primary">
+          <span className="sidebar-active-indicator" aria-hidden="true" />
+          {appNavItems.map((item) => (
+            <button
+              className={`sidebar-nav-button ${activeSection === item.key ? 'active' : ''}`}
+              key={item.key}
+              type="button"
+              onClick={() => {
+                setActiveSection(item.key);
+                setMobileNavOpen(false);
+              }}
+            >
+              <span>{item.label}</span>
+              <small>{item.description}</small>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-spacer" />
+        <div className="sidebar-footer">
           <button
-            aria-label="Refresh"
-            className="icon-button topbar-refresh-button"
-            title="Refresh"
+            className="sidebar-refresh-button"
+            disabled={
+              loadingWeeklyQueue ||
+              loadingJobs ||
+              loadingQueue ||
+              loadingCampaigns ||
+              loadingCampaignQueue
+            }
             type="button"
             onClick={() => void refreshActiveSection()}
           >
             <Icon name="restore" />
+            <span>Refresh</span>
           </button>
+        </div>
+      </aside>
+      {mobileNavOpen ? (
+        <button
+          aria-label="Close navigation"
+          className="mobile-sidebar-scrim"
+          type="button"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
+
+      <main className="app-main">
+      <header className="page-header">
+        <button
+          aria-expanded={mobileNavOpen}
+          aria-label="Open navigation"
+          className="icon-button mobile-menu-button"
+          title="Menu"
+          type="button"
+          onClick={() => setMobileNavOpen((current) => !current)}
+        >
+          <Icon name="menu" />
+        </button>
+        <div className="page-title-block">
+          <h1>{activeNavItem.label}</h1>
         </div>
       </header>
 
@@ -2414,96 +3362,61 @@ function App() {
         </section>
       ) : null}
 
+      {activeSection === 'visibility-tools' ? (
+        <section className="panel visibility-tools-panel">
+          <div className="panel-heading weekly-heading">
+            <div>
+              <h2>Visibility Tools</h2>
+              <p>One-off local visibility actions that sit outside the normal feed calendar workflow.</p>
+            </div>
+            <div className="panel-heading-actions">
+              {loadingCampaigns || loadingWeeklyQueue ? <span className="loading-label">Loading</span> : null}
+            </div>
+          </div>
+
+          <div className="visibility-tool-grid">
+            {visibilityToolCards.map((tool) => (
+              <button
+                className="visibility-tool-card"
+                key={tool.id}
+                type="button"
+                onClick={() => openVisibilityTool(tool.id)}
+              >
+                <span className="visibility-tool-kicker">{tool.label}</span>
+                <h3>{tool.title}</h3>
+                <p>{tool.description}</p>
+                <span className="visibility-tool-cta">Create</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {activeSection === 'calendar' ? (
       <section className="panel weekly-panel">
         <div className="panel-heading weekly-heading">
           <div>
             <h2>Weekly Content Calendar</h2>
-            <p>Plan content by day, slot, and platform while keeping the existing post queue actions.</p>
           </div>
           <div className="panel-heading-actions">
             {loadingWeeklyQueue ? <span className="loading-label">Loading</span> : null}
             <button
               className="secondary-button"
               disabled={busyAction === 'generate-weekly-posts'}
+              type="button"
               onClick={openWeeklyScheduleModal}
             >
-              Generate Weekly Posts
+              Generate Weekly Plan
             </button>
             <button
               disabled={busyAction === 'generate-manual-post'}
-              onClick={() => setShowGeneratePostOptions((current) => !current)}
+              type="button"
+              onClick={openManualPostModal}
             >
               Generate Post
             </button>
           </div>
         </div>
-        {showGeneratePostOptions ? (
-          <div className="manual-generate-panel">
-            <div className="generation-controls" aria-label="Post generation settings">
-              <select
-                aria-label="Business"
-                value={selectedCampaignId}
-                onChange={(event) => setSelectedCampaignId(event.target.value)}
-              >
-                <option value="">Default business</option>
-                {campaigns.map((campaign) => (
-                  <option key={campaign.campaign_id} value={campaign.campaign_id}>
-                    {campaign.campaign_name}
-                  </option>
-                ))}
-              </select>
-              <select
-                aria-label="Manual post platform"
-                value={manualPlatform}
-                onChange={(event) => setManualPlatform(event.target.value as CampaignContentQueueItem['platform'])}
-              >
-                {manualPlatformOptions.map((platform) => (
-                  <option key={platform} value={platform}>
-                    {formatPlatformLabel(platform)}
-                  </option>
-                ))}
-              </select>
-              <select
-                aria-label="Manual post type"
-                value={manualPostType}
-                onChange={(event) => setManualPostType(event.target.value)}
-              >
-                {postTypeOptions.map((postType) => (
-                  <option key={postType} value={postType}>
-                    {postType}
-                  </option>
-                ))}
-              </select>
-              <label className="checkbox-control">
-                <input
-                  checked={includeFacebookGroups}
-                  type="checkbox"
-                  onChange={(event) => setIncludeFacebookGroups(event.target.checked)}
-                />
-                <span>Groups</span>
-              </label>
-            </div>
-            <button
-              className="secondary-button"
-              disabled={busyAction === 'generate-manual-post'}
-              onClick={() => void handleGenerateManualPost()}
-            >
-              Create Post
-            </button>
-          </div>
-        ) : null}
-
-        {weeklyCampaignCalendars.length > 0 ? (
-          <div className="weekly-campaign-summary" aria-label="Weekly campaign summary">
-            {weeklyCampaignCalendars.map((campaignCalendar) => (
-              <span key={`${campaignCalendar.campaignId}:${campaignCalendar.weekKey}`}>
-                <strong>{campaignCalendar.business}</strong>
-                {campaignCalendar.weekKey} · {campaignCalendar.contentSlots.length} slots
-              </span>
-            ))}
-          </div>
-        ) : null}
 
         <div className="weekly-calendar-grid" aria-label="Weekly content calendar">
           {weeklyCalendarDays.map((day, dayIndex) => (
@@ -2522,54 +3435,84 @@ function App() {
               </summary>
               {day.contentSlots.length > 0 ? (
                 <div className="content-slot-list">
-                  {day.contentSlots.map((slot) => (
-                    <button
-                      aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
-                      className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
-                      key={slot.id}
-                      type="button"
-                      onClick={(event) => handleContentSlotClick(event, slot)}
-                      onPointerCancel={handleContentSlotPointerEnd}
-                      onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
-                      onPointerMove={handleContentSlotPointerMove}
-                      onPointerUp={handleContentSlotPointerEnd}
-                    >
-                      <div className="content-slot-media">
-                        {slot.imageSource ? (
-                          <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} />
-                        ) : (
-                          <span>No image</span>
-                        )}
-                      </div>
-                      <div className="content-slot-body">
-                        <div className="content-slot-title-row">
-                          <h3>{slot.title}</h3>
-                          <span className="content-type-pill">{slot.contentType}</span>
+                  {day.contentSlots.map((slot) => {
+                    const collapsedStatus = getCollapsedContentSlotStatus(slot);
+                    const platformLabels = getContentSlotPlatformLabels(slot);
+                    const slotPhotoAsset = getContentSlotPhotoAsset(slot, photoAssets);
+                    const usesPhotoLibrary = contentSlotUsesPhotoLibrary(slot, photoAssets);
+                    return (
+                      <button
+                        aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
+                        className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
+                        key={slot.id}
+                        type="button"
+                        onClick={(event) => handleContentSlotClick(event, slot)}
+                        onPointerCancel={handleContentSlotPointerEnd}
+                        onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
+                        onPointerMove={handleContentSlotPointerMove}
+                        onPointerUp={handleContentSlotPointerEnd}
+                      >
+                        <div className="content-slot-media">
+                          {slot.imageSource ? (
+                            <img alt={`${slot.title} image`} src={getMediaUrl(slot.imageSource)} />
+                          ) : (
+                            <span>No image</span>
+                          )}
                         </div>
-                        <div className="content-slot-meta">
-                          <span>{slot.business}</span>
-                          <span>{formatDisplayDate(slot.scheduledAt)}</span>
-                        </div>
-                        <div className="platform-badge-row" aria-label="Generated platforms">
-                          {coreCalendarPlatforms.map((platform) => (
-                            <span
-                              className={`platform-badge ${
-                                getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''
-                              }`}
-                              key={platform}
-                            >
-                              {platform === 'Google Business' ? 'Google' : platform}
+                        <div className="content-slot-body">
+                          <div className="content-slot-title-row">
+                            <h3>{slot.title}</h3>
+                            <span className="content-type-pill">{slot.contentType}</span>
+                          </div>
+                          <div className="content-slot-meta">
+                            <span>{formatDisplayDate(slot.scheduledAt)}</span>
+                          </div>
+                          <div className="content-slot-card-footer">
+                            <div className="platform-chip-row" aria-label="Platforms">
+                              {platformLabels.length > 0 ? (
+                                platformLabels.map((platform) => (
+                                  <span className="platform-chip" key={platform.platform}>
+                                    {platform.label}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="platform-chip platform-chip-muted">No platform</span>
+                              )}
+                            </div>
+                            <span className={`content-slot-status-pill ${statusClassName(collapsedStatus.status)}`}>
+                              {collapsedStatus.label} / {collapsedStatus.detail}
                             </span>
-                          ))}
+                          </div>
+                          {usesPhotoLibrary ? (
+                            <div className="content-slot-photo-source">
+                              <span>Photo Library</span>
+                              <strong>{slotPhotoAsset?.title ?? 'Saved asset image'}</strong>
+                              {slotPhotoAsset ? (
+                                <em>
+                                  {slotPhotoAsset.category} · {getPhotoAssetQualityLabel(slotPhotoAsset.quality)}
+                                </em>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <div className="platform-status-list" aria-label="Platform status">
+                            {getPlatformStatusRows(slot).map((platformStatus) => (
+                              <span
+                                className={`platform-status-pill ${statusClassName(platformStatus.status)}`}
+                                key={platformStatus.platform}
+                              >
+                                <strong>{platformStatus.label}</strong>
+                                {platformStatus.status}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="content-slot-status">
+                            <span>{slot.platformPosts.length} platform posts</span>
+                          </div>
                         </div>
-                        <div className="content-slot-status">
-                          <span>{slot.statusSummary}</span>
-                          <span>{slot.platformPosts.length} platform posts</span>
-                        </div>
-                      </div>
-                      <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
-                    </button>
-                  ))}
+                        <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="calendar-empty-cell">No slots</div>
@@ -2680,7 +3623,11 @@ function App() {
       ) : null}
 
       {activeSection === 'photo-library' ? (
-        <PhotoLibrarySection businessName={businessProfile.business_name} serviceOptions={businessProfile.services_offered} />
+        <PhotoLibrarySection
+          businessName={businessProfile.business_name}
+          serviceOptions={businessProfile.services_offered}
+          onAssetsChange={setPhotoAssets}
+        />
       ) : null}
 
       {activeSection === 'jobs-queues' ? (
@@ -3117,14 +4064,48 @@ function App() {
           onGenerate={(settings) => void handleGenerateWeeklyPosts(settings)}
         />
       ) : null}
+      {showManualPostModal ? (
+        <ManualPostModal
+          busy={busyAction === 'generate-manual-post'}
+          campaigns={campaigns}
+          settings={manualPostSettings}
+          onCancel={() => setShowManualPostModal(false)}
+          onChange={setManualPostSettings}
+          onGenerate={(settings) => void handleGenerateManualPost(settings)}
+        />
+      ) : null}
+      {selectedVisibilityTool ? (
+        <VisibilityToolModal
+          copied={visibilityToolCopied}
+          error={visibilityToolError}
+          formData={visibilityToolFormData}
+          generating={visibilityToolGenerating}
+          output={visibilityToolOutput}
+          photoAssets={photoAssets}
+          photoAsset={selectedVisibilityPhotoAsset}
+          profile={businessProfile}
+          tool={selectedVisibilityTool}
+          onCancel={closeVisibilityTool}
+          onChange={updateVisibilityToolFormData}
+          onCopy={() => void handleCopyVisibilityToolOutput()}
+          onGenerate={() => void handleGenerateVisibilityTool()}
+          onOutputChange={(output) => {
+            setVisibilityToolOutput(output);
+            setVisibilityToolCopied(false);
+          }}
+        />
+      ) : null}
       {selectedContentSlot ? (
         <ContentSlotDetailModal
           busyAction={busyAction}
           draftTextEdits={draftTextEdits}
           editingDraftId={editingDraftId}
+          photoAsset={getContentSlotPhotoAsset(selectedContentSlot, photoAssets)}
           slot={selectedContentSlot}
+          usesPhotoLibrary={contentSlotUsesPhotoLibrary(selectedContentSlot, photoAssets)}
           onApprove={handleApproveWeeklyPost}
           onCancelEdit={cancelEditingDraft}
+          onChangePhoto={openPhotoPicker}
           onClose={closeContentSlot}
           onDelete={handleDeleteWeeklyPost}
           onDraftTextChange={(contentId, draftText) =>
@@ -3144,6 +4125,16 @@ function App() {
           slot={pendingDeleteContentSlot}
           onCancel={() => setPendingDeleteContentSlotId(null)}
           onConfirm={() => void handleConfirmDeleteContentSlot()}
+        />
+      ) : null}
+      {photoPickerContentSlot ? (
+        <PhotoAssetPickerModal
+          assets={photoAssets}
+          busy={busyAction === `change-photo:${photoPickerContentSlot.id}`}
+          currentAsset={getContentSlotPhotoAsset(photoPickerContentSlot, photoAssets)}
+          slot={photoPickerContentSlot}
+          onCancel={() => setPhotoPickerContentSlotId(null)}
+          onSelect={(asset) => void handleSelectPhotoAssetForSlot(photoPickerContentSlot, asset)}
         />
       ) : null}
       {postAssistantItem ? (
@@ -3211,6 +4202,15 @@ function App() {
                     </a>
                   </span>
                 </div>
+                {postAssistantUsesPhotoLibrary ? (
+                  <PhotoLibraryAssetSummary
+                    asset={postAssistantPhotoAsset}
+                    title="Photo Library Asset"
+                    onChangePhoto={
+                      postAssistantContentSlot ? () => openPhotoPicker(postAssistantContentSlot) : undefined
+                    }
+                  />
+                ) : null}
               </div>
             </div>
 
@@ -3253,7 +4253,8 @@ function App() {
           </section>
         </div>
       ) : null}
-    </main>
+      </main>
+    </div>
   );
 }
 
@@ -3290,96 +4291,9 @@ function BusinessProfileSection({
           <h2>Business Profile</h2>
           <p>Saved business details used by weekly and single-post generation.</p>
         </div>
-        <div className="panel-heading-actions">
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="danger-button" type="button" onClick={onReset}>
-            Reset
-          </button>
-          <button className="secondary-button" type="button" onClick={onSave}>
-            Save Profile
-          </button>
-        </div>
       </div>
 
       <div className="business-profile-layout">
-        <form
-          className="business-profile-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSave();
-          }}
-        >
-          <label className="form-field">
-            <span>Business name</span>
-            <input
-              value={draft.business_name}
-              onChange={(event) => updateField('business_name', event.target.value)}
-            />
-          </label>
-          <label className="form-field">
-            <span>Industry / category</span>
-            <input value={draft.industry} onChange={(event) => updateField('industry', event.target.value)} />
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Service area cities</span>
-            <textarea
-              value={formatProfileList(draft.service_area_cities)}
-              onChange={(event) => updateField('service_area_cities', parseEditableProfileList(event.target.value))}
-            />
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Services offered</span>
-            <textarea
-              value={formatProfileList(draft.services_offered)}
-              onChange={(event) => updateField('services_offered', parseEditableProfileList(event.target.value))}
-            />
-          </label>
-          <label className="form-field">
-            <span>Website URL</span>
-            <input value={draft.website_url} onChange={(event) => updateField('website_url', event.target.value)} />
-          </label>
-          <label className="form-field">
-            <span>Phone number</span>
-            <input value={draft.phone_number} onChange={(event) => updateField('phone_number', event.target.value)} />
-          </label>
-          <label className="form-field">
-            <span>Email</span>
-            <input value={draft.email} onChange={(event) => updateField('email', event.target.value)} />
-          </label>
-          <label className="form-field">
-            <span>Primary CTA</span>
-            <input value={draft.primary_cta} onChange={(event) => updateField('primary_cta', event.target.value)} />
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Brand tone</span>
-            <textarea value={draft.brand_tone} onChange={(event) => updateField('brand_tone', event.target.value)} />
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Target customer</span>
-            <textarea
-              value={draft.target_customer}
-              onChange={(event) => updateField('target_customer', event.target.value)}
-            />
-          </label>
-          <fieldset className="option-group">
-            <legend>Platforms used</legend>
-            <div className="checkbox-grid">
-              {businessProfilePlatforms.map((platform) => (
-                <label className="checkbox-card" key={platform}>
-                  <input
-                    checked={draft.platforms_used.includes(platform)}
-                    type="checkbox"
-                    onChange={() => togglePlatform(platform)}
-                  />
-                  <span>{platform}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-        </form>
-
         <aside className="business-profile-summary" aria-label="Current saved profile">
           <span>Current Saved Profile</span>
           <h3>{profile.business_name}</h3>
@@ -3405,6 +4319,97 @@ function BusinessProfileSection({
             <span>Target: {profile.target_customer}</span>
           </div>
         </aside>
+
+        <details className="business-profile-edit-panel">
+          <summary>Edit</summary>
+          <form
+            className="business-profile-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSave();
+            }}
+          >
+            <label className="form-field">
+              <span>Business name</span>
+              <input
+                value={draft.business_name}
+                onChange={(event) => updateField('business_name', event.target.value)}
+              />
+            </label>
+            <label className="form-field">
+              <span>Industry / category</span>
+              <input value={draft.industry} onChange={(event) => updateField('industry', event.target.value)} />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Service area cities</span>
+              <textarea
+                value={formatProfileList(draft.service_area_cities)}
+                onChange={(event) => updateField('service_area_cities', parseEditableProfileList(event.target.value))}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Services offered</span>
+              <textarea
+                value={formatProfileList(draft.services_offered)}
+                onChange={(event) => updateField('services_offered', parseEditableProfileList(event.target.value))}
+              />
+            </label>
+            <label className="form-field">
+              <span>Website URL</span>
+              <input value={draft.website_url} onChange={(event) => updateField('website_url', event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>Phone number</span>
+              <input value={draft.phone_number} onChange={(event) => updateField('phone_number', event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>Email</span>
+              <input value={draft.email} onChange={(event) => updateField('email', event.target.value)} />
+            </label>
+            <label className="form-field">
+              <span>Primary CTA</span>
+              <input value={draft.primary_cta} onChange={(event) => updateField('primary_cta', event.target.value)} />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Brand tone</span>
+              <textarea value={draft.brand_tone} onChange={(event) => updateField('brand_tone', event.target.value)} />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Target customer</span>
+              <textarea
+                value={draft.target_customer}
+                onChange={(event) => updateField('target_customer', event.target.value)}
+              />
+            </label>
+            <fieldset className="option-group">
+              <legend>Platforms used</legend>
+              <div className="checkbox-grid">
+                {businessProfilePlatforms.map((platform) => (
+                  <label className="checkbox-card" key={platform}>
+                    <input
+                      checked={draft.platforms_used.includes(platform)}
+                      type="checkbox"
+                      onChange={() => togglePlatform(platform)}
+                    />
+                    <span>{platform}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </form>
+
+          <div className="business-profile-actions">
+            <button type="button" onClick={onCancel}>
+              Cancel
+            </button>
+            <button className="danger-button" type="button" onClick={onReset}>
+              Reset
+            </button>
+            <button className="secondary-button" type="button" onClick={onSave}>
+              Save Profile
+            </button>
+          </div>
+        </details>
       </div>
     </section>
   );
@@ -3412,19 +4417,42 @@ function BusinessProfileSection({
 
 function PhotoLibrarySection({
   businessName,
+  onAssetsChange,
   serviceOptions,
 }: {
   businessName: string;
+  onAssetsChange?: (assets: PhotoAsset[]) => void;
   serviceOptions: string[];
 }) {
-  const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>(() => loadStoredPhotoAssets());
+  const businessId = defaultPhotoAssetBusinessId;
+  const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
   const [photoDraft, setPhotoDraft] = useState<PhotoAssetDraft>(() => createEmptyPhotoAssetDraft());
   const [showPhotoAssetModal, setShowPhotoAssetModal] = useState(false);
   const [editingPhotoAssetId, setEditingPhotoAssetId] = useState<string | null>(null);
   const [pendingDeletePhotoAssetId, setPendingDeletePhotoAssetId] = useState<string | null>(null);
-  const [photoAssetBusyAction, setPhotoAssetBusyAction] = useState<'image' | 'save' | null>(null);
+  const [photoAssetBusyAction, setPhotoAssetBusyAction] = useState<'image' | 'save' | 'import' | 'delete' | null>(null);
   const [photoAssetError, setPhotoAssetError] = useState<string | null>(null);
   const [photoAssetNotice, setPhotoAssetNotice] = useState<string | null>(null);
+  const [loadingPhotoAssets, setLoadingPhotoAssets] = useState(true);
+  const [localPhotoImportCount, setLocalPhotoImportCount] = useState(() => loadStoredPhotoAssets().length);
+
+  const loadBackendPhotoAssets = useCallback(async () => {
+    setLoadingPhotoAssets(true);
+    try {
+      const loadedAssets = await getPhotoAssets(businessId);
+      setPhotoAssets(loadedAssets);
+      onAssetsChange?.(loadedAssets);
+      setPhotoAssetError(null);
+    } catch (err) {
+      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to load photo assets from the backend.');
+    } finally {
+      setLoadingPhotoAssets(false);
+    }
+  }, [businessId, onAssetsChange]);
+
+  useEffect(() => {
+    void loadBackendPhotoAssets();
+  }, [loadBackendPhotoAssets]);
 
   const sortedPhotoAssets = useMemo(() => {
     return [...photoAssets].sort((a, b) => {
@@ -3449,6 +4477,8 @@ function PhotoLibrarySection({
         serviceType: primaryService,
       }).length
     : 0;
+  const modalBusyAction =
+    photoAssetBusyAction === 'image' || photoAssetBusyAction === 'save' ? photoAssetBusyAction : null;
 
   function openAddPhotoModal() {
     setPhotoDraft(createEmptyPhotoAssetDraft());
@@ -3498,21 +4528,6 @@ function PhotoLibrarySection({
     }
   }
 
-  function persistPhotoAssets(nextAssets: PhotoAsset[]) {
-    try {
-      storePhotoAssets(nextAssets);
-      setPhotoAssets(nextAssets);
-      return true;
-    } catch (err) {
-      setPhotoAssetError(
-        err instanceof Error
-          ? `Unable to save the Photo Library locally. ${err.message}`
-          : 'Unable to save the Photo Library locally.',
-      );
-      return false;
-    }
-  }
-
   async function handleSavePhotoAsset() {
     const title = photoDraft.title.trim();
     if (!title) {
@@ -3524,13 +4539,11 @@ function PhotoLibrarySection({
       return;
     }
 
-    const now = new Date().toISOString();
     const existingAsset = editingPhotoAsset;
-    const savedAsset: PhotoAsset = {
-      id: existingAsset?.id ?? createPhotoAssetId(),
-      business_name: existingAsset?.business_name || businessName || defaultBusinessProfile.business_name,
-      image_url: photoDraft.image_url,
+    const payload: PhotoAssetPayload = {
+      business_id: existingAsset?.business_id ?? businessId,
       image_data: photoDraft.image_data,
+      image_url: photoDraft.image_url,
       image_filename: photoDraft.image_filename,
       title,
       description: photoDraft.description.trim(),
@@ -3539,31 +4552,92 @@ function PhotoLibrarySection({
       location: photoDraft.location.trim(),
       tags: normalizePhotoTags(photoDraft.tagsText),
       quality: photoDraft.quality,
-      used_count: existingAsset?.used_count ?? 0,
-      created_at: existingAsset?.created_at ?? now,
-      updated_at: now,
     };
-    const nextAssets = existingAsset
-      ? photoAssets.map((asset) => (asset.id === existingAsset.id ? savedAsset : asset))
-      : [savedAsset, ...photoAssets];
 
     setPhotoAssetBusyAction('save');
     setPhotoAssetError(null);
-    if (persistPhotoAssets(nextAssets)) {
+    try {
+      const savedAsset = existingAsset
+        ? await updatePhotoAsset(existingAsset.id, payload)
+        : await createPhotoAsset(payload);
+      setPhotoAssets((currentAssets) => {
+        const nextAssets = existingAsset
+          ? currentAssets.map((asset) => (asset.id === existingAsset.id ? savedAsset : asset))
+          : [savedAsset, ...currentAssets];
+        onAssetsChange?.(nextAssets);
+        return nextAssets;
+      });
       setPhotoAssetNotice(existingAsset ? 'Photo asset updated.' : 'Photo asset added to the library.');
       closePhotoModal();
+    } catch (err) {
+      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to save this photo asset.');
+    } finally {
+      setPhotoAssetBusyAction(null);
     }
-    setPhotoAssetBusyAction(null);
   }
 
-  function handleConfirmDeletePhotoAsset() {
+  async function handleConfirmDeletePhotoAsset() {
     if (!pendingDeletePhotoAsset) return;
 
-    const nextAssets = photoAssets.filter((asset) => asset.id !== pendingDeletePhotoAsset.id);
+    setPhotoAssetBusyAction('delete');
     setPhotoAssetError(null);
-    if (persistPhotoAssets(nextAssets)) {
+    try {
+      await deletePhotoAsset(pendingDeletePhotoAsset.id, pendingDeletePhotoAsset.business_id);
+      setPhotoAssets((currentAssets) => {
+        const nextAssets = currentAssets.filter((asset) => asset.id !== pendingDeletePhotoAsset.id);
+        onAssetsChange?.(nextAssets);
+        return nextAssets;
+      });
       setPhotoAssetNotice('Photo asset deleted.');
       setPendingDeletePhotoAssetId(null);
+    } catch (err) {
+      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to delete this photo asset.');
+    } finally {
+      setPhotoAssetBusyAction(null);
+    }
+  }
+
+  async function handleImportStoredPhotoAssets() {
+    const storedPayloads = loadStoredPhotoAssets();
+    if (storedPayloads.length === 0) {
+      setLocalPhotoImportCount(0);
+      setPhotoAssetNotice('No local Photo Library assets were found to import.');
+      return;
+    }
+
+    const importablePayloads = storedPayloads
+      .filter((payload) => payload.image_data || payload.image_url)
+      .map((payload) => ({
+        ...payload,
+        business_id: payload.business_id || businessId,
+      }));
+
+    if (importablePayloads.length === 0) {
+      setPhotoAssetError('Local Photo Library assets did not include importable image data.');
+      return;
+    }
+
+    setPhotoAssetBusyAction('import');
+    setPhotoAssetError(null);
+    try {
+      const importedAssets = await Promise.all(importablePayloads.map((payload) => createPhotoAsset(payload)));
+      setPhotoAssets((currentAssets) => {
+        const nextAssets = [...importedAssets, ...currentAssets];
+        onAssetsChange?.(nextAssets);
+        return nextAssets;
+      });
+      window.localStorage.removeItem(photoLibraryStorageKey);
+      setLocalPhotoImportCount(0);
+      const skippedCount = storedPayloads.length - importablePayloads.length;
+      setPhotoAssetNotice(
+        skippedCount > 0
+          ? `Imported ${importedAssets.length} photo assets. Skipped ${skippedCount} assets without image data.`
+          : `Imported ${importedAssets.length} photo assets into backend storage.`,
+      );
+    } catch (err) {
+      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to import local Photo Library assets.');
+    } finally {
+      setPhotoAssetBusyAction(null);
     }
   }
 
@@ -3572,9 +4646,19 @@ function PhotoLibrarySection({
       <div className="panel-heading weekly-heading">
         <div>
           <h2>Photo Library</h2>
-          <p>Reusable project photos for local content planning. Generated posts still use the backend rotation for now.</p>
+          <p>Reusable {businessName || 'business'} project photos for content planning and weekly generation.</p>
         </div>
         <div className="panel-heading-actions">
+          {localPhotoImportCount > 0 ? (
+            <button
+              className="secondary-button"
+              disabled={photoAssetBusyAction !== null}
+              type="button"
+              onClick={() => void handleImportStoredPhotoAssets()}
+            >
+              {photoAssetBusyAction === 'import' ? 'Importing...' : `Import ${localPhotoImportCount} Local`}
+            </button>
+          ) : null}
           <button className="secondary-button" type="button" onClick={openAddPhotoModal}>
             Add Photo
           </button>
@@ -3588,29 +4672,15 @@ function PhotoLibrarySection({
       ) : null}
       {photoAssetNotice ? <div className="photo-library-notice">{photoAssetNotice}</div> : null}
 
-      <div className="photo-library-summary" aria-label="Photo library summary">
-        <span>
-          <strong>{photoAssets.length}</strong>
-          Assets
-        </span>
-        <span>
-          <strong>{heroAssetCount}</strong>
-          Hero
-        </span>
-        <span>
-          <strong>{usedAssetCount}</strong>
-          Uses
-        </span>
-        <span>
-          <strong>{futureGenerationMatches}</strong>
-          Match primary service
-        </span>
-      </div>
-
-      {sortedPhotoAssets.length > 0 ? (
+      {loadingPhotoAssets ? (
+        <div className="photo-library-empty">
+          <strong>Loading backend photo assets...</strong>
+          <span>Gomez Ops is reading the saved Photo Library for {businessName || 'this business'}.</span>
+        </div>
+      ) : sortedPhotoAssets.length > 0 ? (
         <div className="photo-library-grid">
           {sortedPhotoAssets.map((asset) => {
-            const imageSource = getPhotoAssetImageSource(asset);
+            const imageSource = getPhotoAssetPreviewUrl(asset);
             return (
               <article className="photo-asset-card" key={asset.id}>
                 <div className="photo-asset-preview">
@@ -3665,7 +4735,7 @@ function PhotoLibrarySection({
 
       {showPhotoAssetModal ? (
         <PhotoAssetModal
-          busyAction={photoAssetBusyAction}
+          busyAction={modalBusyAction}
           draft={photoDraft}
           editing={Boolean(editingPhotoAsset)}
           error={photoAssetError}
@@ -3679,8 +4749,9 @@ function PhotoLibrarySection({
       {pendingDeletePhotoAsset ? (
         <DeletePhotoAssetConfirmModal
           asset={pendingDeletePhotoAsset}
+          busy={photoAssetBusyAction === 'delete'}
           onCancel={() => setPendingDeletePhotoAssetId(null)}
-          onConfirm={handleConfirmDeletePhotoAsset}
+          onConfirm={() => void handleConfirmDeletePhotoAsset()}
         />
       ) : null}
     </section>
@@ -3708,10 +4779,10 @@ function PhotoAssetModal({
   onFileSelect: (file: File | null) => Promise<void>;
   onSave: () => void;
 }) {
-  const imageSource = getPhotoAssetImageSource(draft);
+  const imageSource = getPhotoAssetPreviewUrl(draft);
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+    <div className="modal-backdrop photo-picker-backdrop" role="presentation" onMouseDown={onCancel}>
       <section
         className="modal-panel photo-asset-modal"
         role="dialog"
@@ -3757,7 +4828,7 @@ function PhotoAssetModal({
                   ? 'Preparing image preview...'
                   : editing
                     ? 'Current image is retained unless a new file is selected.'
-                    : 'Upload a project photo to save it in the local library.'}
+                    : 'Upload a project photo to save it in the backend Photo Library.'}
               </small>
             </label>
             <label className="form-field">
@@ -3835,10 +4906,12 @@ function PhotoAssetModal({
 
 function DeletePhotoAssetConfirmModal({
   asset,
+  busy,
   onCancel,
   onConfirm,
 }: {
   asset: PhotoAsset;
+  busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -3858,14 +4931,14 @@ function DeletePhotoAssetConfirmModal({
           </div>
         </div>
         <p className="delete-confirm-message">
-          This will remove the photo asset from the local Photo Library. Generated posts that already reference images are not changed.
+          This will remove the photo asset from backend storage. Generated posts that already reference images are not changed.
         </p>
         <div className="modal-actions">
-          <button type="button" onClick={onCancel}>
+          <button disabled={busy} type="button" onClick={onCancel}>
             Cancel
           </button>
-          <button className="danger-button" type="button" onClick={onConfirm}>
-            Delete Photo
+          <button className="danger-button" disabled={busy} type="button" onClick={onConfirm}>
+            {busy ? 'Deleting...' : 'Delete Photo'}
           </button>
         </div>
       </section>
@@ -3955,6 +5028,265 @@ function DeleteContentSlotConfirmModal({
           </button>
           <button className="danger-button" type="button" onClick={onConfirm}>
             Delete Post
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function VisibilityToolModal({
+  copied,
+  error,
+  formData,
+  generating,
+  output,
+  photoAssets,
+  photoAsset,
+  profile,
+  tool,
+  onCancel,
+  onChange,
+  onCopy,
+  onGenerate,
+  onOutputChange,
+}: {
+  copied: boolean;
+  error: string | null;
+  formData: VisibilityToolFormData;
+  generating: boolean;
+  output: string;
+  photoAssets: PhotoAsset[];
+  photoAsset: PhotoAsset | null;
+  profile: BusinessProfile;
+  tool: VisibilityToolCard;
+  onCancel: () => void;
+  onChange: (field: keyof VisibilityToolFormData, value: string) => void;
+  onCopy: () => void;
+  onGenerate: () => void;
+  onOutputChange: (output: string) => void;
+}) {
+  const serviceOptions = profile.services_offered.filter((service) => service.trim());
+  const locationOptions = profile.service_area_cities.filter((location) => location.trim());
+  const supportsPhoto = visibilityToolSupportsPhoto(tool.id);
+  const serviceListId = `visibility-services-${tool.id}`;
+  const locationListId = `visibility-locations-${tool.id}`;
+  const selectedPhotoLabel = photoAsset
+    ? [photoAsset.title, photoAsset.service_type, photoAsset.location].filter(Boolean).join(' - ')
+    : '';
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel visibility-tool-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="visibility-tool-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="visibility-tool-title">{tool.title}</h2>
+            <p>{tool.description}</p>
+          </div>
+          {tool.id === 'local-reach-post' && formData.destination === 'Facebook Group' ? (
+            <span className="manual-post-pill">Manual posting only</span>
+          ) : null}
+        </div>
+
+        <datalist id={serviceListId}>
+          {serviceOptions.map((service) => (
+            <option key={service} value={service} />
+          ))}
+        </datalist>
+        <datalist id={locationListId}>
+          {locationOptions.map((location) => (
+            <option key={location} value={location} />
+          ))}
+        </datalist>
+
+        <div className="visibility-tool-form">
+          {tool.id === 'local-reach-post' ? (
+            <>
+              <label className="form-field">
+                <span>Post destination</span>
+                <select
+                  value={formData.destination}
+                  onChange={(event) => onChange('destination', event.target.value)}
+                >
+                  {localReachDestinationOptions.map((destination) => (
+                    <option key={destination}>{destination}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Post type</span>
+                <select value={formData.postType} onChange={(event) => onChange('postType', event.target.value)}>
+                  {localReachPostTypeOptions.map((postType) => (
+                    <option key={postType}>{postType}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Service focus</span>
+                <input
+                  list={serviceListId}
+                  value={formData.serviceFocus}
+                  onChange={(event) => onChange('serviceFocus', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Location/service area</span>
+                <input
+                  list={locationListId}
+                  value={formData.location}
+                  onChange={(event) => onChange('location', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Goal</span>
+                <select value={formData.goal} onChange={(event) => onChange('goal', event.target.value)}>
+                  {localReachGoalOptions.map((goal) => (
+                    <option key={goal}>{goal}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Tone</span>
+                <select value={formData.tone} onChange={(event) => onChange('tone', event.target.value)}>
+                  {localReachToneOptions.map((tone) => (
+                    <option key={tone}>{tone}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>CTA</span>
+                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
+              </label>
+            </>
+          ) : null}
+
+          {tool.id === 'review-request' ? (
+            <>
+              <label className="form-field">
+                <span>Customer name</span>
+                <input
+                  placeholder="Customer name"
+                  value={formData.customerName}
+                  onChange={(event) => onChange('customerName', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Job/service completed</span>
+                <input
+                  list={serviceListId}
+                  value={formData.jobCompleted}
+                  onChange={(event) => onChange('jobCompleted', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Tone</span>
+                <select value={formData.tone} onChange={(event) => onChange('tone', event.target.value)}>
+                  <option>Friendly and professional</option>
+                  <option>Warm and personal</option>
+                  <option>Short and direct</option>
+                </select>
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Review link</span>
+                <input
+                  placeholder="Google review link"
+                  value={formData.reviewLink}
+                  onChange={(event) => onChange('reviewLink', event.target.value)}
+                />
+              </label>
+            </>
+          ) : null}
+
+          {tool.id === 'business-intro-post' ? (
+            <>
+              <label className="form-field">
+                <span>Location/community</span>
+                <input
+                  list={locationListId}
+                  value={formData.location}
+                  onChange={(event) => onChange('location', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Services to mention</span>
+                <input
+                  value={formData.servicesToMention}
+                  onChange={(event) => onChange('servicesToMention', event.target.value)}
+                />
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Business background/why choose us</span>
+                <textarea
+                  value={formData.businessBackground}
+                  onChange={(event) => onChange('businessBackground', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>CTA</span>
+                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
+              </label>
+            </>
+          ) : null}
+
+          {supportsPhoto ? (
+            <label className="form-field form-field-wide">
+              <span>Optional photo asset</span>
+              <select value={formData.photoAssetId} onChange={(event) => onChange('photoAssetId', event.target.value)}>
+                <option value="">No photo selected</option>
+                {photoAssets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>
+                    {[asset.title, asset.service_type, asset.location].filter(Boolean).join(' - ')}
+                  </option>
+                ))}
+              </select>
+              {selectedPhotoLabel ? <small>{selectedPhotoLabel}</small> : null}
+            </label>
+          ) : null}
+
+          {tool.id === 'local-reach-post' ? (
+            <label className="form-field form-field-wide">
+              <span>Notes/context</span>
+              <textarea
+                placeholder="Add project details, offer, seasonal angle, neighborhood context, or anything the copy should include."
+                value={formData.notes}
+                onChange={(event) => onChange('notes', event.target.value)}
+              />
+            </label>
+          ) : null}
+        </div>
+
+        {error ? (
+          <div className="photo-library-alert" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        <section className="visibility-output-preview">
+          <div className="visibility-output-heading">
+            <span>Generated output</span>
+            <button className="secondary-button" disabled={!output.trim()} type="button" onClick={onCopy}>
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          {output ? (
+            <textarea value={output} onChange={(event) => onOutputChange(event.target.value)} />
+          ) : (
+            <p>Generated copy will appear here after you fill the form and click Generate.</p>
+          )}
+        </section>
+
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
+            {generating ? 'Generating...' : 'Generate'}
           </button>
         </div>
       </section>
@@ -4098,13 +5430,272 @@ function WeeklyScheduleModal({
   );
 }
 
+function ManualPostModal({
+  busy,
+  campaigns,
+  settings,
+  onCancel,
+  onChange,
+  onGenerate,
+}: {
+  busy: boolean;
+  campaigns: Campaign[];
+  settings: ManualPostSettings;
+  onCancel: () => void;
+  onChange: (settings: ManualPostSettings) => void;
+  onGenerate: (settings: ManualPostSettings) => void;
+}) {
+  function updateSettings(update: Partial<ManualPostSettings>) {
+    onChange({ ...settings, ...update });
+  }
+
+  function togglePlatform(platform: WeeklySchedulePlatform) {
+    updateSettings({
+      platforms: settings.platforms.includes(platform)
+        ? settings.platforms.filter((currentPlatform) => currentPlatform !== platform)
+        : [...settings.platforms, platform],
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel weekly-schedule-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manual-post-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="manual-post-title">Generate Single Post</h2>
+            <p>Choose the date, platform mix, and content angle before creating a calendar post.</p>
+          </div>
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+
+        <div className="weekly-schedule-form">
+          <label className="form-field">
+            <span>Post date</span>
+            <input
+              type="date"
+              value={settings.scheduledDate}
+              onChange={(event) => updateSettings({ scheduledDate: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Business</span>
+            <select
+              value={settings.campaignId}
+              onChange={(event) => updateSettings({ campaignId: event.target.value })}
+            >
+              <option value="">Default business</option>
+              {campaigns.map((campaign) => (
+                <option key={campaign.campaign_id} value={campaign.campaign_id}>
+                  {campaign.campaign_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Title / angle</span>
+            <input
+              type="text"
+              value={settings.title}
+              onChange={(event) => updateSettings({ title: event.target.value })}
+              placeholder="Optional post focus"
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Content type</span>
+            <select
+              value={settings.contentType}
+              onChange={(event) => updateSettings({ contentType: event.target.value })}
+            >
+              {weeklyScheduleContentTypeOptions.map((contentType) => (
+                <option key={contentType} value={contentType}>
+                  {contentType}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <fieldset className="option-group">
+            <legend>Platforms to generate for</legend>
+            <div className="checkbox-grid">
+              {weeklySchedulePlatformOptions.map((platform) => (
+                <label className="checkbox-card" key={platform}>
+                  <input
+                    checked={settings.platforms.includes(platform)}
+                    type="checkbox"
+                    onChange={() => togglePlatform(platform)}
+                  />
+                  <span>{platform}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy || !settings.scheduledDate || settings.platforms.length === 0 || !settings.contentType}
+            type="button"
+            onClick={() => onGenerate(settings)}
+          >
+            Generate Post
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PhotoLibraryAssetSummary({
+  asset,
+  title,
+  onChangePhoto,
+}: {
+  asset: PhotoAsset | null;
+  title: string;
+  onChangePhoto?: () => void;
+}) {
+  return (
+    <section className="photo-library-asset-summary" aria-label={title}>
+      <div className="photo-library-asset-summary-heading">
+        <span>{title}</span>
+        {onChangePhoto ? (
+          <button className="photo-change-button" type="button" onClick={onChangePhoto}>
+            Change photo
+          </button>
+        ) : null}
+      </div>
+      {asset ? (
+        <>
+          <strong>{asset.title}</strong>
+          <div className="photo-library-asset-meta">
+            <span>{asset.category}</span>
+            <span>{getPhotoAssetQualityLabel(asset.quality)}</span>
+            {asset.service_type ? <span>{asset.service_type}</span> : null}
+            {asset.location ? <span>{asset.location}</span> : null}
+            <span>{asset.used_count} uses</span>
+          </div>
+          {asset.tags.length > 0 ? (
+            <div className="photo-tag-row" aria-label="Photo Library asset tags">
+              {asset.tags.map((tag) => (
+                <span key={`${asset.id}:${tag}`}>{tag}</span>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <p>Image is stored in the Photo Library, but its metadata is not currently available.</p>
+      )}
+    </section>
+  );
+}
+
+function PhotoAssetPickerModal({
+  assets,
+  busy,
+  currentAsset,
+  slot,
+  onCancel,
+  onSelect,
+}: {
+  assets: PhotoAsset[];
+  busy: boolean;
+  currentAsset: PhotoAsset | null;
+  slot: ContentSlot;
+  onCancel: () => void;
+  onSelect: (asset: PhotoAsset) => void;
+}) {
+  const sortedAssets = [...assets].sort((a, b) => {
+    const qualityCompare =
+      photoAssetQualityScore[b.quality] - photoAssetQualityScore[a.quality];
+    if (qualityCompare !== 0) return qualityCompare;
+    const usedCompare = a.used_count - b.used_count;
+    if (usedCompare !== 0) return usedCompare;
+    return b.updated_at.localeCompare(a.updated_at);
+  });
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section
+        className="modal-panel photo-picker-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="photo-picker-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="photo-picker-title">Change photo</h2>
+            <p>{slot.title}</p>
+          </div>
+          <button disabled={busy} type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+        {sortedAssets.length > 0 ? (
+          <div className="photo-picker-grid">
+            {sortedAssets.map((asset) => {
+              const imageSource = getPhotoAssetPreviewUrl(asset);
+              const isCurrent = currentAsset?.id === asset.id;
+              return (
+                <button
+                  className={`photo-picker-card ${isCurrent ? 'photo-picker-card-current' : ''}`}
+                  disabled={busy || isCurrent || !getPhotoAssetImageSource(asset)}
+                  key={asset.id}
+                  type="button"
+                  onClick={() => onSelect(asset)}
+                >
+                  <div className="photo-picker-preview">
+                    {imageSource ? <img alt={asset.title} src={imageSource} /> : <span>No image</span>}
+                  </div>
+                  <div className="photo-picker-card-body">
+                    <span>{isCurrent ? 'Current photo' : 'Use this photo'}</span>
+                    <strong>{asset.title}</strong>
+                    <em>
+                      {asset.category} · {getPhotoAssetQualityLabel(asset.quality)} · {asset.used_count} uses
+                    </em>
+                    {(asset.service_type || asset.location) ? (
+                      <small>
+                        {[asset.service_type, asset.location].filter(Boolean).join(' · ')}
+                      </small>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="photo-library-empty">
+            <strong>No Photo Library assets found.</strong>
+            <span>Upload project photos in the Photo Library before changing a calendar slot photo.</span>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ContentSlotDetailModal({
   busyAction,
   draftTextEdits,
   editingDraftId,
+  photoAsset,
   slot,
+  usesPhotoLibrary,
   onApprove,
   onCancelEdit,
+  onChangePhoto,
   onClose,
   onDelete,
   onDraftTextChange,
@@ -4116,9 +5707,12 @@ function ContentSlotDetailModal({
   busyAction: BusyAction;
   draftTextEdits: Record<string, string>;
   editingDraftId: string | null;
+  photoAsset: PhotoAsset | null;
   slot: ContentSlot;
+  usesPhotoLibrary: boolean;
   onApprove: (item: CampaignContentQueueItem) => Promise<void>;
   onCancelEdit: (contentId: string) => void;
+  onChangePhoto: (slot: ContentSlot) => void;
   onClose: () => void;
   onDelete: (item: CampaignContentQueueItem) => Promise<void>;
   onDraftTextChange: (contentId: string, draftText: string) => void;
@@ -4170,6 +5764,17 @@ function ContentSlotDetailModal({
                 </span>
               ))}
             </div>
+            {usesPhotoLibrary ? (
+              <PhotoLibraryAssetSummary
+                asset={photoAsset}
+                title="Photo Library Asset"
+                onChangePhoto={() => onChangePhoto(slot)}
+              />
+            ) : (
+              <button className="photo-change-button" type="button" onClick={() => onChangePhoto(slot)}>
+                Change photo
+              </button>
+            )}
           </div>
         </div>
 

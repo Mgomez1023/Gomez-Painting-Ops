@@ -13,7 +13,9 @@ from app.models.campaign_content import (
     SocialQueueGenerateResponse,
     WeeklySocialQueueGenerateRequest,
 )
+from app.models.photo_asset import PhotoAsset, PhotoAssetCategory, PhotoAssetQuality
 from app.services.campaign_image_service import CampaignImageService, CampaignImageMetadata
+from app.services.photo_asset_service import PhotoAssetService
 from app.services.sheets_service import SheetsDataError, SheetsService
 
 
@@ -41,6 +43,30 @@ STATIC_WEEKLY_AVOID_PHRASES = [
     "transform your space",
     "request a free quote today",
 ]
+PHOTO_ASSET_CATEGORY_PREFERENCES: dict[str, list[PhotoAssetCategory]] = {
+    "Before/After": ["Before/After Pair", "Before", "After"],
+    "Before After": ["Before/After Pair", "Before", "After"],
+    "Trust Local Proof": ["Finished Project", "Before/After Pair", "After"],
+    "Service Education": ["Team / Work In Progress", "Interior", "Exterior"],
+    "FAQ Education": ["Team / Work In Progress", "Interior", "Exterior"],
+    "Seasonal Reminder": ["Interior", "Exterior", "Finished Project"],
+    "Problem Solution": ["Drywall Repair", "Interior", "Exterior"],
+    "Problem/Solution": ["Drywall Repair", "Interior", "Exterior"],
+    "Free Estimate CTA": ["Finished Project", "Before/After Pair", "Exterior"],
+    "Offer CTA": ["Finished Project", "Before/After Pair", "Exterior"],
+    "CTA": ["Finished Project", "Before/After Pair", "Exterior"],
+}
+PHOTO_ASSET_QUALITY_PREFERENCES: dict[str, list[PhotoAssetQuality]] = {
+    "Trust Local Proof": ["hero", "strong"],
+    "Free Estimate CTA": ["hero", "strong"],
+    "Offer CTA": ["hero", "strong"],
+    "CTA": ["hero", "strong"],
+}
+PHOTO_ASSET_QUALITY_SCORE: dict[PhotoAssetQuality, int] = {
+    "standard": 0,
+    "strong": 1,
+    "hero": 2,
+}
 
 
 @dataclass(frozen=True)
@@ -59,10 +85,12 @@ class SocialQueueService:
         sheets_service: SheetsService,
         campaign_agent: CampaignAgent,
         campaign_image_service: CampaignImageService,
+        photo_asset_service: PhotoAssetService | None = None,
     ) -> None:
         self.sheets_service = sheets_service
         self.campaign_agent = campaign_agent
         self.campaign_image_service = campaign_image_service
+        self.photo_asset_service = photo_asset_service
 
     def list_current_week_posts(self) -> list[CampaignContentQueueItem]:
         return self.list_week_posts()
@@ -120,6 +148,9 @@ class SocialQueueService:
         content_id_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         queue_items: list[CampaignContentQueueItem] = []
         used_weekly_image_filenames = self._used_weekly_image_filenames(existing_items)
+        available_photo_assets = self._available_photo_assets(campaign)
+        selected_photo_asset_ids: set[str] = set()
+        selected_photo_assets: list[PhotoAsset] = []
 
         for slots in self._group_weekly_slots_by_index(missing_slots):
             first_slot = slots[0]
@@ -130,10 +161,24 @@ class SocialQueueService:
                 avoid_phrases=avoid_phrases,
             )
             avoid_phrases = self._extend_avoid_phrases_from_draft_set(avoid_phrases, draft_set)
+            photo_asset = self._select_photo_asset_for_slot(
+                assets=available_photo_assets,
+                campaign=campaign,
+                post_type=first_slot.post_type,
+                used_weekly_image_filenames=used_weekly_image_filenames,
+                selected_photo_asset_ids=selected_photo_asset_ids,
+            )
+            slot_image_metadata = self._photo_asset_image_metadata(photo_asset)
+            if photo_asset is not None and slot_image_metadata is not None:
+                selected_photo_asset_ids.add(photo_asset.id)
+                selected_photo_assets.append(photo_asset)
+                used_weekly_image_filenames.add(slot_image_metadata.image_filename.lower())
             for slot in slots:
-                image_metadata = self.campaign_image_service.select_next_unique_image(used_weekly_image_filenames)
-                if image_metadata is not None:
-                    used_weekly_image_filenames.add(image_metadata.image_filename.lower())
+                image_metadata = slot_image_metadata
+                if image_metadata is None:
+                    image_metadata = self.campaign_image_service.select_next_unique_image(used_weekly_image_filenames)
+                    if image_metadata is not None:
+                        used_weekly_image_filenames.add(image_metadata.image_filename.lower())
                 queue_items.append(
                     self._build_queue_item(
                         campaign=campaign,
@@ -152,6 +197,7 @@ class SocialQueueService:
                 )
 
         saved_items = self.sheets_service.append_posts(queue_items)
+        self._increment_photo_asset_usage(selected_photo_assets)
         return SocialQueueGenerateResponse(queue_items=[*existing_items, *saved_items], existing=False)
 
     def generate_manual_post(
@@ -409,6 +455,134 @@ class SocialQueueService:
             slot_groups[slot.slot_index].append(slot)
         return grouped_slots
 
+    def _available_photo_assets(self, campaign: Campaign) -> list[PhotoAsset]:
+        if self.photo_asset_service is None:
+            return []
+        try:
+            return self.photo_asset_service.list_photo_assets()
+        except Exception:
+            return []
+
+    def _select_photo_asset_for_slot(
+        self,
+        assets: list[PhotoAsset],
+        campaign: Campaign,
+        post_type: str,
+        used_weekly_image_filenames: set[str],
+        selected_photo_asset_ids: set[str],
+    ) -> PhotoAsset | None:
+        candidates = [
+            asset
+            for asset in assets
+            if asset.id not in selected_photo_asset_ids
+            and self._photo_asset_image_metadata(asset) is not None
+            and (asset_image_filename := self._photo_asset_image_filename(asset))
+            and asset_image_filename.lower() not in used_weekly_image_filenames
+        ]
+        if not candidates:
+            return None
+
+        return sorted(
+            candidates,
+            key=lambda asset: self._photo_asset_match_sort_key(asset=asset, campaign=campaign, post_type=post_type),
+        )[0]
+
+    @staticmethod
+    def _photo_asset_match_sort_key(asset: PhotoAsset, campaign: Campaign, post_type: str) -> tuple[int, int, int, int, str]:
+        score = SocialQueueService._photo_asset_match_score(asset=asset, campaign=campaign, post_type=post_type)
+        return (-score, asset.used_count, -PHOTO_ASSET_QUALITY_SCORE[asset.quality], asset.created_at, asset.id)
+
+    @staticmethod
+    def _photo_asset_match_score(asset: PhotoAsset, campaign: Campaign, post_type: str) -> int:
+        normalized_post_type = SocialQueueService._normalize_photo_match_text(post_type)
+        category_preferences = SocialQueueService._photo_category_preferences(normalized_post_type)
+        quality_preferences = SocialQueueService._photo_quality_preferences(normalized_post_type)
+        score = 0
+        if asset.category in category_preferences:
+            score += 100 - category_preferences.index(asset.category) * 8
+        if asset.quality in quality_preferences:
+            score += 40 - quality_preferences.index(asset.quality) * 8
+        else:
+            score += PHOTO_ASSET_QUALITY_SCORE[asset.quality] * 4
+        if SocialQueueService._photo_asset_service_matches(asset.service_type, campaign.service_focus):
+            score += 26
+        if SocialQueueService._photo_asset_location_matches(asset.location, campaign.target_location):
+            score += 12
+        score += SocialQueueService._photo_asset_tag_score(asset.tags, normalized_post_type)
+        return score
+
+    @staticmethod
+    def _photo_category_preferences(normalized_post_type: str) -> list[PhotoAssetCategory]:
+        for post_type, categories in PHOTO_ASSET_CATEGORY_PREFERENCES.items():
+            if SocialQueueService._normalize_photo_match_text(post_type) in normalized_post_type:
+                return categories
+        return ["Finished Project", "Interior", "Exterior"]
+
+    @staticmethod
+    def _photo_quality_preferences(normalized_post_type: str) -> list[PhotoAssetQuality]:
+        for post_type, qualities in PHOTO_ASSET_QUALITY_PREFERENCES.items():
+            if SocialQueueService._normalize_photo_match_text(post_type) in normalized_post_type:
+                return qualities
+        return ["hero", "strong", "standard"]
+
+    @staticmethod
+    def _photo_asset_service_matches(asset_service_type: str, campaign_service_focus: str) -> bool:
+        asset_service = SocialQueueService._normalize_photo_match_text(asset_service_type)
+        campaign_service = SocialQueueService._normalize_photo_match_text(campaign_service_focus)
+        return bool(asset_service and campaign_service and (asset_service in campaign_service or campaign_service in asset_service))
+
+    @staticmethod
+    def _photo_asset_location_matches(asset_location: str, campaign_location: str) -> bool:
+        asset_location_text = SocialQueueService._normalize_photo_match_text(asset_location)
+        campaign_location_text = SocialQueueService._normalize_photo_match_text(campaign_location)
+        return bool(
+            asset_location_text
+            and campaign_location_text
+            and (asset_location_text in campaign_location_text or campaign_location_text in asset_location_text)
+        )
+
+    @staticmethod
+    def _photo_asset_tag_score(tags: list[str], normalized_post_type: str) -> int:
+        post_type_terms = {
+            term
+            for term in normalized_post_type.split()
+            if len(term) > 2
+        }
+        score = 0
+        for tag in tags:
+            tag_terms = set(SocialQueueService._normalize_photo_match_text(tag).split())
+            score += len(post_type_terms.intersection(tag_terms)) * 6
+        return score
+
+    @staticmethod
+    def _photo_asset_image_metadata(asset: PhotoAsset | None) -> CampaignImageMetadata | None:
+        if asset is None:
+            return None
+        image_path = asset.image_path or asset.image_url
+        image_filename = SocialQueueService._photo_asset_image_filename(asset)
+        if not image_path or not image_filename:
+            return None
+        return CampaignImageMetadata(image_filename=image_filename, image_path=image_path)
+
+    @staticmethod
+    def _photo_asset_image_filename(asset: PhotoAsset) -> str | None:
+        if asset.image_filename:
+            return asset.image_filename
+        return SocialQueueService._image_filename(asset.image_path or asset.image_url)
+
+    def _increment_photo_asset_usage(self, assets: list[PhotoAsset]) -> None:
+        if self.photo_asset_service is None:
+            return
+        for asset in assets:
+            try:
+                self.photo_asset_service.increment_used_count(asset.id)
+            except Exception:
+                continue
+
+    @staticmethod
+    def _normalize_photo_match_text(value: str | None) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
     def _campaign_avoid_phrases(self, campaign_id: str) -> list[str]:
         phrases = list(STATIC_WEEKLY_AVOID_PHRASES)
         recent_items = sorted(
@@ -429,6 +603,7 @@ class SocialQueueService:
     ) -> list[str]:
         generated_openings = [
             self._first_sentence(draft_set.facebook_post),
+            self._first_sentence(draft_set.facebook_group_post),
             self._first_sentence(draft_set.google_business_post),
             self._first_sentence(draft_set.instagram_caption),
         ]
@@ -524,7 +699,9 @@ class SocialQueueService:
     def _caption_for_platform(draft_set, platform: str) -> str:
         if platform == "Google Business":
             return draft_set.google_business_post
-        if platform in {"Facebook", "Facebook Page", "Facebook Groups", "Meta Dual"}:
+        if platform == "Facebook Groups":
+            return draft_set.facebook_group_post or draft_set.facebook_post
+        if platform in {"Facebook", "Facebook Page", "Meta Dual"}:
             return draft_set.facebook_post
         if platform == "Instagram":
             return draft_set.instagram_caption
