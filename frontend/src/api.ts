@@ -70,7 +70,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(message, response.status, body);
   }
 
-  return (await response.json()) as T;
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    const bodyText = await response.text().catch(() => '');
+    const preview = bodyText.trim().slice(0, 80);
+    const message = `API endpoint ${path} returned ${contentType || 'a non-JSON response'} instead of JSON.${
+      preview ? ` Response starts with: ${preview}` : ''
+    }`;
+    throw new ApiError(message, response.status, bodyText);
+  }
+
+  try {
+    return (await response.json()) as T;
+  } catch (err) {
+    throw new ApiError(
+      err instanceof Error ? `API endpoint ${path} returned invalid JSON. ${err.message}` : `API endpoint ${path} returned invalid JSON.`,
+      response.status,
+      null,
+    );
+  }
 }
 
 export function getJobs(): Promise<CompletedJob[]> {

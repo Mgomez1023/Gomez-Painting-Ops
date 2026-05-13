@@ -40,11 +40,23 @@
       "destination": "/api/index.py"
     },
     {
+      "source": "/photo-assets/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/visibility/:path*",
+      "destination": "/api/index.py"
+    },
+    {
       "source": "/publisher/:path*",
       "destination": "/api/index.py"
     },
     {
       "source": "/media/campaigns/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/media/photo-assets/:path*",
       "destination": "/api/index.py"
     },
     {
