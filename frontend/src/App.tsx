@@ -132,14 +132,30 @@ type BodyScrollLockPreviousStyles = {
 };
 
 const bodyScrollLockState: {
-  count: number;
+  locks: Set<string>;
   previousStyles: BodyScrollLockPreviousStyles | null;
   scrollY: number;
 } = {
-  count: 0,
+  locks: new Set<string>(),
   previousStyles: null,
   scrollY: 0,
 };
+
+let bodyScrollLockId = 0;
+const interactiveElementSelector = [
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'a',
+  'label',
+  'summary',
+  'option',
+  '[contenteditable="true"]',
+  '[role="button"]',
+  '[data-no-drag]',
+  '[data-interactive]',
+].join(',');
 
 type WeeklyScheduleSettings = {
   weekStartDate: string;
@@ -237,6 +253,7 @@ type WeeklyCalendarDay = {
 };
 
 type CalendarDragCandidate = {
+  phase: 'pending' | 'dragging';
   slotId: string;
   originDayIndex: number;
   pointerId: number;
@@ -247,10 +264,10 @@ type CalendarDragCandidate = {
   grabOffsetY: number;
   sourceWidth: number;
   sourceHeight: number;
-  hasStarted: boolean;
 };
 
 type CalendarDragState = {
+  phase: 'dragging';
   slotId: string;
   originDayIndex: number;
   pointerType: string;
@@ -1099,53 +1116,97 @@ function createEmptyPhotoAssetDraft(): PhotoAssetDraft {
   };
 }
 
-function useBodyScrollLock(active = true) {
-  useEffect(() => {
-    if (!active || typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+function isInteractiveElement(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(interactiveElementSelector));
+}
 
+function isNestedInteractiveElement(target: EventTarget | null, container: Element): boolean {
+  if (!isInteractiveElement(target)) return false;
+  if (!(target instanceof Element)) return false;
+  const interactiveElement = target.closest(interactiveElementSelector);
+  return Boolean(interactiveElement && interactiveElement !== container);
+}
+
+function restoreBodyScrollLockStyles() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  const { body, documentElement } = document;
+  const previousStyles = bodyScrollLockState.previousStyles;
+  if (!previousStyles) {
+    body.classList.remove('modal-open');
+    return;
+  }
+
+  body.style.overflow = previousStyles.bodyOverflow;
+  body.style.overscrollBehavior = previousStyles.bodyOverscrollBehavior;
+  body.style.position = previousStyles.bodyPosition;
+  body.style.top = previousStyles.bodyTop;
+  body.style.width = previousStyles.bodyWidth;
+  documentElement.style.overflow = previousStyles.documentOverflow;
+  documentElement.style.overscrollBehavior = previousStyles.documentOverscrollBehavior;
+  body.classList.remove('modal-open');
+  window.scrollTo(0, bodyScrollLockState.scrollY);
+  bodyScrollLockState.previousStyles = null;
+  bodyScrollLockState.scrollY = 0;
+}
+
+function lockBodyScroll(reason: string) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  if (bodyScrollLockState.locks.has(reason)) return;
+
+  if (bodyScrollLockState.locks.size === 0) {
     const { body } = document;
     const { documentElement } = document;
-    if (bodyScrollLockState.count === 0) {
-      bodyScrollLockState.scrollY = window.scrollY;
-      bodyScrollLockState.previousStyles = {
-        bodyOverflow: body.style.overflow,
-        bodyOverscrollBehavior: body.style.overscrollBehavior,
-        bodyPosition: body.style.position,
-        bodyTop: body.style.top,
-        bodyWidth: body.style.width,
-        documentOverflow: documentElement.style.overflow,
-        documentOverscrollBehavior: documentElement.style.overscrollBehavior,
-      };
-      body.classList.add('modal-open');
-      body.style.overflow = 'hidden';
-      body.style.overscrollBehavior = 'none';
-      body.style.position = 'fixed';
-      body.style.top = `-${bodyScrollLockState.scrollY}px`;
-      body.style.width = '100%';
-      documentElement.style.overflow = 'hidden';
-      documentElement.style.overscrollBehavior = 'none';
-    }
-    bodyScrollLockState.count += 1;
-
-    return () => {
-      bodyScrollLockState.count = Math.max(0, bodyScrollLockState.count - 1);
-      if (bodyScrollLockState.count > 0) return;
-
-      const previousStyles = bodyScrollLockState.previousStyles;
-      if (previousStyles) {
-        body.style.overflow = previousStyles.bodyOverflow;
-        body.style.overscrollBehavior = previousStyles.bodyOverscrollBehavior;
-        body.style.position = previousStyles.bodyPosition;
-        body.style.top = previousStyles.bodyTop;
-        body.style.width = previousStyles.bodyWidth;
-        document.documentElement.style.overflow = previousStyles.documentOverflow;
-        document.documentElement.style.overscrollBehavior = previousStyles.documentOverscrollBehavior;
-      }
-      body.classList.remove('modal-open');
-      window.scrollTo(0, bodyScrollLockState.scrollY);
-      bodyScrollLockState.previousStyles = null;
-      bodyScrollLockState.scrollY = 0;
+    bodyScrollLockState.scrollY = window.scrollY;
+    bodyScrollLockState.previousStyles = {
+      bodyOverflow: body.style.overflow,
+      bodyOverscrollBehavior: body.style.overscrollBehavior,
+      bodyPosition: body.style.position,
+      bodyTop: body.style.top,
+      bodyWidth: body.style.width,
+      documentOverflow: documentElement.style.overflow,
+      documentOverscrollBehavior: documentElement.style.overscrollBehavior,
     };
+    body.classList.add('modal-open');
+    body.style.overflow = 'hidden';
+    body.style.overscrollBehavior = 'none';
+    body.style.position = 'fixed';
+    body.style.top = `-${bodyScrollLockState.scrollY}px`;
+    body.style.width = '100%';
+    documentElement.style.overflow = 'hidden';
+    documentElement.style.overscrollBehavior = 'none';
+  }
+
+  bodyScrollLockState.locks.add(reason);
+}
+
+function unlockBodyScroll(reason: string) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  bodyScrollLockState.locks.delete(reason);
+  if (bodyScrollLockState.locks.size === 0) {
+    restoreBodyScrollLockStyles();
+  }
+}
+
+function cleanupAllBodyScrollLocks() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  bodyScrollLockState.locks.clear();
+  restoreBodyScrollLockStyles();
+}
+
+function useBodyScrollLock(active = true) {
+  const lockReasonRef = useRef<string | null>(null);
+  if (lockReasonRef.current === null) {
+    bodyScrollLockId += 1;
+    lockReasonRef.current = `body-lock-${bodyScrollLockId}`;
+  }
+
+  useEffect(() => {
+    const lockReason = lockReasonRef.current;
+    if (!active || !lockReason) return undefined;
+
+    lockBodyScroll(lockReason);
+    return () => unlockBodyScroll(lockReason);
   }, [active]);
 }
 
@@ -2251,6 +2312,14 @@ function App() {
     return () => document.body.classList.remove('calendar-drag-active');
   }, [calendarDrag]);
 
+  useEffect(() => {
+    return () => {
+      calendarDragCandidateRef.current = null;
+      document.body.classList.remove('calendar-drag-active');
+      cleanupAllBodyScrollLocks();
+    };
+  }, []);
+
   const queueCounts = useMemo(() => {
     return queue.reduce(
       (counts, item) => {
@@ -3241,17 +3310,18 @@ function App() {
   }
 
   function handleContentSlotPointerDown(event: ReactPointerEvent<HTMLButtonElement>, slot: ContentSlot) {
-    if (event.button !== 0 || busyAction) return;
-    if (
-      event.pointerType !== 'mouse' &&
-      event.target instanceof Element &&
-      !event.target.closest('[data-calendar-drag-handle="true"]')
-    ) {
+    if (!event.isPrimary || event.button !== 0 || busyAction || calendarDrag) return;
+
+    const targetElement = event.target instanceof Element ? event.target : null;
+    const dragHandle = targetElement?.closest('[data-calendar-drag-handle="true"]');
+    if (targetElement && isNestedInteractiveElement(targetElement, event.currentTarget) && !dragHandle) {
       return;
     }
+    if (event.pointerType !== 'mouse' && !dragHandle) return;
 
     const sourceRect = event.currentTarget.getBoundingClientRect();
     calendarDragCandidateRef.current = {
+      phase: 'pending',
       slotId: slot.id,
       originDayIndex: slot.dayIndex,
       pointerId: event.pointerId,
@@ -3262,28 +3332,37 @@ function App() {
       grabOffsetY: event.clientY - sourceRect.top,
       sourceWidth: sourceRect.width,
       sourceHeight: sourceRect.height,
-      hasStarted: false,
     };
-    if (event.pointerType !== 'mouse') {
-      event.preventDefault();
-    }
-    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function handleContentSlotPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
     const candidate = calendarDragCandidateRef.current;
     if (!candidate || candidate.pointerId !== event.pointerId) return;
 
-    const movement = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
-    if (!candidate.hasStarted && movement < 7) return;
+    const deltaX = event.clientX - candidate.startX;
+    const deltaY = event.clientY - candidate.startY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    const movement = Math.hypot(deltaX, deltaY);
+    const dragThreshold = event.pointerType === 'mouse' ? 8 : 11;
 
-    event.preventDefault();
-    suppressContentSlotClickRef.current = true;
+    if (candidate.phase === 'pending') {
+      if (event.pointerType !== 'mouse' && absY > 10 && absY > absX * 1.35) {
+        calendarDragCandidateRef.current = null;
+        return;
+      }
+      if (movement < dragThreshold) return;
 
-    if (!candidate.hasStarted) {
+      candidate.phase = 'dragging';
+      if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }
+      event.preventDefault();
+      suppressContentSlotClickRef.current = true;
+
       const target = detectCalendarDropTarget(event.clientX, event.clientY);
-      candidate.hasStarted = true;
       setCalendarDrag({
+        phase: 'dragging',
         slotId: candidate.slotId,
         originDayIndex: candidate.originDayIndex,
         pointerType: candidate.pointerType,
@@ -3299,6 +3378,8 @@ function App() {
       return;
     }
 
+    event.preventDefault();
+    suppressContentSlotClickRef.current = true;
     updateCalendarDragTarget(event.clientX, event.clientY);
   }
 
@@ -3306,7 +3387,7 @@ function App() {
     const candidate = calendarDragCandidateRef.current;
     if (!candidate || candidate.pointerId !== event.pointerId) return;
 
-    const wasDragging = candidate.hasStarted;
+    const wasDragging = candidate.phase === 'dragging';
     const canceled = event.type === 'pointercancel';
     const target = wasDragging && !canceled ? detectCalendarDropTarget(event.clientX, event.clientY) : null;
     const activeSlotId = candidate.slotId;
@@ -4736,6 +4817,7 @@ function PhotoLibrarySection({
   const [photoAssetNotice, setPhotoAssetNotice] = useState<string | null>(null);
   const [loadingPhotoAssets, setLoadingPhotoAssets] = useState(true);
   const [localPhotoImportCount, setLocalPhotoImportCount] = useState(() => loadStoredPhotoAssets().length);
+  const photoAssetSavingRef = useRef(false);
 
   const loadBackendPhotoAssets = useCallback(async () => {
     setLoadingPhotoAssets(true);
@@ -4830,6 +4912,8 @@ function PhotoLibrarySection({
   }
 
   async function handleSavePhotoAsset() {
+    if (photoAssetSavingRef.current || photoAssetBusyAction === 'save') return;
+
     const title = photoDraft.title.trim();
     if (!title) {
       setPhotoAssetError('Photo title is required.');
@@ -4857,6 +4941,7 @@ function PhotoLibrarySection({
 
     setPhotoAssetBusyAction('save');
     setPhotoAssetError(null);
+    photoAssetSavingRef.current = true;
     try {
       const savedAsset = existingAsset
         ? await updatePhotoAsset(existingAsset.id, payload)
@@ -4873,6 +4958,7 @@ function PhotoLibrarySection({
     } catch (err) {
       setPhotoAssetError(err instanceof Error ? err.message : 'Unable to save this photo asset.');
     } finally {
+      photoAssetSavingRef.current = false;
       setPhotoAssetBusyAction(null);
     }
   }
@@ -5081,6 +5167,7 @@ function PhotoAssetModal({
   onSave: () => void;
 }) {
   const imageSource = getPhotoAssetPreviewUrl(draft);
+  const photoAssetFormId = 'photo-asset-modal-form';
 
   return (
     <StandardModal
@@ -5094,7 +5181,12 @@ function PhotoAssetModal({
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
-          <button className="secondary-button" disabled={busyAction !== null} type="button" onClick={onSave}>
+          <button
+            className="secondary-button"
+            disabled={busyAction === 'save' || busyAction === 'image'}
+            form={photoAssetFormId}
+            type="submit"
+          >
             {busyAction === 'save' ? 'Saving...' : 'Save Photo'}
           </button>
         </>
@@ -5108,6 +5200,7 @@ function PhotoAssetModal({
 
       <form
         className="photo-asset-form"
+        id={photoAssetFormId}
         onSubmit={(event) => {
           event.preventDefault();
           onSave();
@@ -5212,36 +5305,28 @@ function DeletePhotoAssetConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  useBodyScrollLock();
-
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section
-        className="modal-panel delete-confirm-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-photo-asset-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <div>
-            <h2 id="delete-photo-asset-title">Delete this photo?</h2>
-            <p>{asset.title}</p>
-          </div>
-        </div>
-        <p className="delete-confirm-message">
-          This will remove the photo asset from backend storage. Generated posts that already reference images are not changed.
-        </p>
-        <div className="modal-actions">
+    <StandardModal
+      className="delete-confirm-modal"
+      labelledBy="delete-photo-asset-title"
+      title="Delete this photo?"
+      description={asset.title}
+      onClose={onCancel}
+      actions={
+        <>
           <button disabled={busy} type="button" onClick={onCancel}>
             Cancel
           </button>
           <button className="danger-button" disabled={busy} type="button" onClick={onConfirm}>
             {busy ? 'Deleting...' : 'Delete Photo'}
           </button>
-        </div>
-      </section>
-    </div>
+        </>
+      }
+    >
+      <p className="delete-confirm-message">
+        This will remove the photo asset from backend storage. Generated posts that already reference images are not changed.
+      </p>
+    </StandardModal>
   );
 }
 
@@ -5267,19 +5352,22 @@ function CalendarDragPreview({ drag, slot }: { drag: CalendarDragState; slot: Co
   if (!slot) return null;
 
   const isTouchDrag = drag.pointerType !== 'mouse';
+  const previewScale = isTouchDrag ? 0.86 : 0.9;
+  const previewWidth = drag.sourceWidth * previewScale;
+  const previewHeight = drag.sourceHeight * previewScale;
   const viewportWidth = typeof window === 'undefined' ? drag.sourceWidth : window.innerWidth;
   const viewportHeight = typeof window === 'undefined' ? drag.sourceHeight : window.innerHeight;
-  const rawX = isTouchDrag ? drag.currentX - drag.sourceWidth / 2 : drag.currentX - drag.grabOffsetX;
-  const rawY = isTouchDrag ? drag.currentY - drag.sourceHeight + 28 : drag.currentY - drag.grabOffsetY;
-  const previewX = Math.max(8, Math.min(rawX, viewportWidth - drag.sourceWidth - 8));
-  const previewY = Math.max(8, Math.min(rawY, viewportHeight - drag.sourceHeight - 8));
+  const rawX = isTouchDrag ? drag.currentX - previewWidth / 2 : drag.currentX - drag.grabOffsetX * previewScale;
+  const rawY = isTouchDrag ? drag.currentY - previewHeight - 18 : drag.currentY - drag.grabOffsetY * previewScale;
+  const previewX = Math.max(8, Math.min(rawX, viewportWidth - previewWidth - 8));
+  const previewY = Math.max(8, Math.min(rawY, viewportHeight - previewHeight - 8));
 
   return (
     <div
       className="calendar-drag-preview"
       style={{
         height: drag.sourceHeight,
-        transform: `translate3d(${previewX}px, ${previewY}px, 0)`,
+        transform: `translate3d(${previewX}px, ${previewY}px, 0) scale(${previewScale})`,
         width: drag.sourceWidth,
       }}
       aria-hidden="true"
@@ -5362,19 +5450,25 @@ function StandardModal({
   title: string;
 }) {
   useBodyScrollLock();
+  const backdropPointerStartedRef = useRef(false);
 
   const modal = (
     <div
       className="modal-backdrop"
       role="presentation"
+      onPointerDown={(event) => {
+        backdropPointerStartedRef.current = event.target === event.currentTarget;
+      }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) {
+        if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
           onClose();
         }
+        backdropPointerStartedRef.current = false;
       }}
     >
       <section
         className={`modal-panel standard-modal ${className}`}
+        data-interactive="true"
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
