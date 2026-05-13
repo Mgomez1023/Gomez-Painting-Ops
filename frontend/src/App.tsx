@@ -124,6 +124,9 @@ type StoredPhotoAssetPayload = Partial<PhotoAssetPayload> & {
 type BodyScrollLockPreviousStyles = {
   bodyOverflow: string;
   bodyOverscrollBehavior: string;
+  bodyPosition: string;
+  bodyTop: string;
+  bodyWidth: string;
   documentOverflow: string;
   documentOverscrollBehavior: string;
 };
@@ -237,6 +240,7 @@ type CalendarDragCandidate = {
   slotId: string;
   originDayIndex: number;
   pointerId: number;
+  pointerType: string;
   startX: number;
   startY: number;
   grabOffsetX: number;
@@ -249,6 +253,7 @@ type CalendarDragCandidate = {
 type CalendarDragState = {
   slotId: string;
   originDayIndex: number;
+  pointerType: string;
   currentX: number;
   currentY: number;
   grabOffsetX: number;
@@ -1105,11 +1110,18 @@ function useBodyScrollLock(active = true) {
       bodyScrollLockState.previousStyles = {
         bodyOverflow: body.style.overflow,
         bodyOverscrollBehavior: body.style.overscrollBehavior,
+        bodyPosition: body.style.position,
+        bodyTop: body.style.top,
+        bodyWidth: body.style.width,
         documentOverflow: documentElement.style.overflow,
         documentOverscrollBehavior: documentElement.style.overscrollBehavior,
       };
+      body.classList.add('modal-open');
       body.style.overflow = 'hidden';
       body.style.overscrollBehavior = 'none';
+      body.style.position = 'fixed';
+      body.style.top = `-${bodyScrollLockState.scrollY}px`;
+      body.style.width = '100%';
       documentElement.style.overflow = 'hidden';
       documentElement.style.overscrollBehavior = 'none';
     }
@@ -1123,9 +1135,13 @@ function useBodyScrollLock(active = true) {
       if (previousStyles) {
         body.style.overflow = previousStyles.bodyOverflow;
         body.style.overscrollBehavior = previousStyles.bodyOverscrollBehavior;
+        body.style.position = previousStyles.bodyPosition;
+        body.style.top = previousStyles.bodyTop;
+        body.style.width = previousStyles.bodyWidth;
         document.documentElement.style.overflow = previousStyles.documentOverflow;
         document.documentElement.style.overscrollBehavior = previousStyles.documentOverscrollBehavior;
       }
+      body.classList.remove('modal-open');
       window.scrollTo(0, bodyScrollLockState.scrollY);
       bodyScrollLockState.previousStyles = null;
       bodyScrollLockState.scrollY = 0;
@@ -3239,6 +3255,7 @@ function App() {
       slotId: slot.id,
       originDayIndex: slot.dayIndex,
       pointerId: event.pointerId,
+      pointerType: event.pointerType,
       startX: event.clientX,
       startY: event.clientY,
       grabOffsetX: event.clientX - sourceRect.left,
@@ -3247,6 +3264,9 @@ function App() {
       sourceHeight: sourceRect.height,
       hasStarted: false,
     };
+    if (event.pointerType !== 'mouse') {
+      event.preventDefault();
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -3266,6 +3286,7 @@ function App() {
       setCalendarDrag({
         slotId: candidate.slotId,
         originDayIndex: candidate.originDayIndex,
+        pointerType: candidate.pointerType,
         currentX: event.clientX,
         currentY: event.clientY,
         grabOffsetX: candidate.grabOffsetX,
@@ -5245,12 +5266,20 @@ function CalendarTrashDropZone({ active }: { active: boolean }) {
 function CalendarDragPreview({ drag, slot }: { drag: CalendarDragState; slot: ContentSlot | null }) {
   if (!slot) return null;
 
+  const isTouchDrag = drag.pointerType !== 'mouse';
+  const viewportWidth = typeof window === 'undefined' ? drag.sourceWidth : window.innerWidth;
+  const viewportHeight = typeof window === 'undefined' ? drag.sourceHeight : window.innerHeight;
+  const rawX = isTouchDrag ? drag.currentX - drag.sourceWidth / 2 : drag.currentX - drag.grabOffsetX;
+  const rawY = isTouchDrag ? drag.currentY - drag.sourceHeight + 28 : drag.currentY - drag.grabOffsetY;
+  const previewX = Math.max(8, Math.min(rawX, viewportWidth - drag.sourceWidth - 8));
+  const previewY = Math.max(8, Math.min(rawY, viewportHeight - drag.sourceHeight - 8));
+
   return (
     <div
       className="calendar-drag-preview"
       style={{
         height: drag.sourceHeight,
-        transform: `translate3d(${drag.currentX - drag.grabOffsetX}px, ${drag.currentY - drag.grabOffsetY}px, 0)`,
+        transform: `translate3d(${previewX}px, ${previewY}px, 0)`,
         width: drag.sourceWidth,
       }}
       aria-hidden="true"

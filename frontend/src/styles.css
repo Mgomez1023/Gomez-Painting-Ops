@@ -42,6 +42,11 @@ body.calendar-drag-active {
   user-select: none;
 }
 
+body.modal-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 .app-shell {
   display: grid;
   gap: 24px;
@@ -1449,7 +1454,9 @@ th {
   pointer-events: none;
   position: fixed;
   top: 0;
-  z-index: 1200;
+  transform-origin: top left;
+  will-change: transform;
+  z-index: 5000;
 }
 
 .calendar-trash-zone {
@@ -1473,7 +1480,7 @@ th {
     box-shadow 150ms ease,
     color 150ms ease,
     transform 150ms ease;
-  z-index: 1190;
+  z-index: 4990;
 }
 
 .calendar-trash-zone svg {
@@ -2027,7 +2034,7 @@ th {
   position: fixed;
   touch-action: auto;
   width: 100vw;
-  z-index: 1000;
+  z-index: 6000;
 }
 
 .photo-picker-backdrop {
@@ -2053,7 +2060,7 @@ th {
   overflow: hidden;
   padding: 0;
   pointer-events: auto;
-  touch-action: auto;
+  touch-action: pan-y;
   width: min(920px, calc(100vw - 48px));
 }
 
