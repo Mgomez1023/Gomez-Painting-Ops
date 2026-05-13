@@ -5335,13 +5335,20 @@ function StandardModal({
   useBodyScrollLock();
 
   const modal = (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <section
         className={`modal-panel standard-modal ${className}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="standard-modal-header">
           <div>
