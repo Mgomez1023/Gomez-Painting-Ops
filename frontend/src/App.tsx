@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   CSSProperties,
   JSX,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
 } from 'react';
 import {
   ApiError,
@@ -5057,129 +5059,124 @@ function PhotoAssetModal({
   onFileSelect: (file: File | null) => Promise<void>;
   onSave: () => void;
 }) {
-  useBodyScrollLock();
   const imageSource = getPhotoAssetPreviewUrl(draft);
 
   return (
-    <div className="modal-backdrop photo-picker-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section
-        className="modal-panel photo-asset-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="photo-asset-modal-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <div>
-            <h2 id="photo-asset-modal-title">{editing ? 'Edit Photo Asset' : 'Add Photo Asset'}</h2>
-            <p>Store reusable photo context for future post generation and campaign planning.</p>
-          </div>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-        {error ? (
-          <div className="photo-asset-modal-error" role="alert">
-            {error}
-          </div>
-        ) : null}
-
-        <form
-          className="photo-asset-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSave();
-          }}
-        >
-          <div className="photo-upload-preview">
-            {imageSource ? <img alt={draft.title || 'Selected photo asset'} src={imageSource} /> : <span>No image selected</span>}
-          </div>
-          <div className="photo-asset-fields">
-            <label className="form-field form-field-wide">
-              <span>Image file</span>
-              <input
-                accept="image/*"
-                type="file"
-                onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
-              />
-              <small>
-                {busyAction === 'image'
-                  ? 'Preparing image preview...'
-                  : editing
-                    ? 'Current image is retained unless a new file is selected.'
-                    : 'Upload a project photo to save it in the backend Photo Library.'}
-              </small>
-            </label>
-            <label className="form-field">
-              <span>Title</span>
-              <input value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
-            </label>
-            <label className="form-field">
-              <span>Category</span>
-              <select value={draft.category} onChange={(event) => onChange('category', event.target.value as PhotoAssetCategory)}>
-                {photoAssetCategories.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-field">
-              <span>Service type</span>
-              <input
-                list="photo-service-options"
-                value={draft.service_type}
-                onChange={(event) => onChange('service_type', event.target.value)}
-              />
-              <datalist id="photo-service-options">
-                {serviceOptions.map((service) => (
-                  <option key={service} value={service} />
-                ))}
-              </datalist>
-            </label>
-            <label className="form-field">
-              <span>Location / city</span>
-              <input value={draft.location} onChange={(event) => onChange('location', event.target.value)} />
-            </label>
-            <label className="form-field">
-              <span>Quality / usefulness</span>
-              <select value={draft.quality} onChange={(event) => onChange('quality', event.target.value as PhotoAssetQuality)}>
-                {photoAssetQualityOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Tags</span>
-              <input
-                placeholder="kitchen, neutral colors, oak park"
-                value={draft.tagsText}
-                onChange={(event) => onChange('tagsText', event.target.value)}
-              />
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Description / context</span>
-              <textarea
-                value={draft.description}
-                onChange={(event) => onChange('description', event.target.value)}
-                placeholder="What makes this photo useful for future posts?"
-              />
-            </label>
-          </div>
-        </form>
-
-        <div className="modal-actions">
+    <StandardModal
+      className="photo-asset-modal"
+      labelledBy="photo-asset-modal-title"
+      title={editing ? 'Edit Photo Asset' : 'Add Photo Asset'}
+      description="Store reusable photo context for future post generation and campaign planning."
+      onClose={onCancel}
+      actions={
+        <>
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
           <button className="secondary-button" disabled={busyAction !== null} type="button" onClick={onSave}>
             {busyAction === 'save' ? 'Saving...' : 'Save Photo'}
           </button>
+        </>
+      }
+    >
+      {error ? (
+        <div className="photo-asset-modal-error" role="alert">
+          {error}
         </div>
-      </section>
-    </div>
+      ) : null}
+
+      <form
+        className="photo-asset-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave();
+        }}
+      >
+        <div className="photo-asset-preview-panel">
+          <div className="photo-upload-preview">
+            {imageSource ? (
+              <img alt={draft.title || 'Selected photo asset'} src={imageSource} />
+            ) : (
+              <span>No image selected</span>
+            )}
+          </div>
+          <label className="form-field">
+            <span>Image file</span>
+            <input
+              accept="image/*"
+              type="file"
+              onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
+            />
+            <small>
+              {busyAction === 'image'
+                ? 'Preparing image preview...'
+                : editing
+                  ? 'Current image is retained unless a new file is selected.'
+                  : 'Upload a project photo to save it in the backend Photo Library.'}
+            </small>
+          </label>
+        </div>
+        <div className="photo-asset-fields">
+          <label className="form-field">
+            <span>Title</span>
+            <input value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Category</span>
+            <select value={draft.category} onChange={(event) => onChange('category', event.target.value as PhotoAssetCategory)}>
+              {photoAssetCategories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Service type</span>
+            <input
+              list="photo-service-options"
+              value={draft.service_type}
+              onChange={(event) => onChange('service_type', event.target.value)}
+            />
+            <datalist id="photo-service-options">
+              {serviceOptions.map((service) => (
+                <option key={service} value={service} />
+              ))}
+            </datalist>
+          </label>
+          <label className="form-field">
+            <span>Location / city</span>
+            <input value={draft.location} onChange={(event) => onChange('location', event.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Quality / usefulness</span>
+            <select value={draft.quality} onChange={(event) => onChange('quality', event.target.value as PhotoAssetQuality)}>
+              {photoAssetQualityOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Tags</span>
+            <input
+              placeholder="kitchen, neutral colors, oak park"
+              value={draft.tagsText}
+              onChange={(event) => onChange('tagsText', event.target.value)}
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Description / context</span>
+            <textarea
+              value={draft.description}
+              onChange={(event) => onChange('description', event.target.value)}
+              placeholder="What makes this photo useful for future posts?"
+            />
+          </label>
+        </div>
+      </form>
+    </StandardModal>
   );
 }
 
@@ -5316,6 +5313,52 @@ function DeleteContentSlotConfirmModal({
       </section>
     </div>
   );
+}
+
+function StandardModal({
+  actions,
+  children,
+  className = '',
+  description,
+  labelledBy,
+  onClose,
+  title,
+}: {
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  description?: string;
+  labelledBy: string;
+  onClose: () => void;
+  title: string;
+}) {
+  useBodyScrollLock();
+
+  const modal = (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className={`modal-panel standard-modal ${className}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="standard-modal-header">
+          <div>
+            <h2 id={labelledBy}>{title}</h2>
+            {description ? <p>{description}</p> : null}
+          </div>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="standard-modal-body">{children}</div>
+        {actions ? <div className="standard-modal-actions">{actions}</div> : null}
+      </section>
+    </div>
+  );
+
+  return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
 }
 
 function VisibilityToolModal({
