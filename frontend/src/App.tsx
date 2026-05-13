@@ -463,10 +463,10 @@ const settingsNavItem: AppNavItem = { key: 'settings', label: 'Settings', descri
 const visibilityToolCards: VisibilityToolCard[] = [
   {
     id: 'local-reach-post',
-    title: 'Local Reach Post',
+    title: 'Groups + Business',
     description:
-      'Generate a local post for Google Business, Facebook groups, Craigslist, neighborhood groups, or general copy/paste outreach.',
-    label: 'Local visibility',
+      'Generate a post for Google Business, Facebook groups, Craigslist, or other general copy/paste outreach.',
+    label: '',
   },
   {
     id: 'review-request',
@@ -695,6 +695,13 @@ function createDefaultVisibilityToolFormData(
 function getVisibilityToolById(toolId: VisibilityToolId | null) {
   if (!toolId) return null;
   return visibilityToolCards.find((tool) => tool.id === toolId) ?? null;
+}
+
+function getVisibilityToolMobileLabel(toolId: VisibilityToolId) {
+  if (toolId === 'local-reach-post') return 'Groups + Business';
+  if (toolId === 'review-request') return 'Reviews';
+  if (toolId === 'business-intro-post') return 'Intro';
+  return 'Craigslist';
 }
 
 function visibilityToolSupportsPhoto(toolId: VisibilityToolId) {
@@ -2225,7 +2232,7 @@ function App() {
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
-  const [selectedVisibilityToolId, setSelectedVisibilityToolId] = useState<VisibilityToolId | null>(null);
+  const [selectedVisibilityToolId, setSelectedVisibilityToolId] = useState<VisibilityToolId>('local-reach-post');
   const [visibilityToolFormData, setVisibilityToolFormData] = useState<VisibilityToolFormData>(() =>
     createDefaultVisibilityToolFormData('local-reach-post', loadStoredBusinessProfile()),
   );
@@ -2492,8 +2499,7 @@ function App() {
   }, [photoPickerContentSlotId, weeklyContentSlots]);
 
   const appModalOpen = Boolean(
-    selectedVisibilityToolId ||
-      showWeeklyScheduleModal ||
+    showWeeklyScheduleModal ||
       showManualPostModal ||
       selectedContentSlot ||
       pendingDeleteContentSlot ||
@@ -2600,6 +2606,7 @@ function App() {
   }
 
   function openVisibilityTool(toolId: VisibilityToolId) {
+    if (toolId === selectedVisibilityToolId) return;
     setSelectedVisibilityToolId(toolId);
     setVisibilityToolFormData(createDefaultVisibilityToolFormData(toolId, businessProfile));
     setVisibilityToolOutput(null);
@@ -2608,7 +2615,7 @@ function App() {
   }
 
   function closeVisibilityTool() {
-    setSelectedVisibilityToolId(null);
+    setVisibilityToolFormData(createDefaultVisibilityToolFormData(selectedVisibilityToolId, businessProfile));
     setVisibilityToolOutput(null);
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
@@ -2625,8 +2632,6 @@ function App() {
   }
 
   async function handleGenerateVisibilityTool() {
-    if (!selectedVisibilityToolId) return;
-
     setVisibilityToolGenerating(true);
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
@@ -3823,7 +3828,7 @@ function App() {
       isPhotoLibraryImageSource(postAssistantImageSource) ||
       (postAssistantContentSlot && contentSlotUsesPhotoLibrary(postAssistantContentSlot, photoAssets)),
   );
-  const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId);
+  const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId) ?? getVisibilityToolById('local-reach-post');
   const selectedVisibilityPhotoAsset =
     photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
   const enabledVisibilityChannels = visibilityChannelsFromProfile(businessProfile);
@@ -3949,18 +3954,46 @@ function App() {
           <div className="visibility-tool-grid">
             {visibleVisibilityToolCards.map((tool) => (
               <button
-                className="visibility-tool-card"
+                aria-pressed={selectedVisibilityToolId === tool.id}
+                className={`visibility-tool-card ${selectedVisibilityToolId === tool.id ? 'visibility-tool-card-active' : ''}`}
+                data-tool-id={tool.id}
                 key={tool.id}
                 type="button"
                 onClick={() => openVisibilityTool(tool.id)}
               >
-                <span className="visibility-tool-kicker">{tool.label}</span>
+                <span className="visibility-tool-mobile-label">{getVisibilityToolMobileLabel(tool.id)}</span>
                 <h3>{tool.title}</h3>
                 <p>{tool.description}</p>
-                <span className="visibility-tool-cta">Create</span>
+                <span className="visibility-tool-cta">{selectedVisibilityToolId === tool.id ? 'Selected' : 'Select'}</span>
               </button>
             ))}
           </div>
+          {selectedVisibilityTool ? (
+            <VisibilityToolModal
+              key={selectedVisibilityTool.id}
+              copied={visibilityToolCopied}
+              error={visibilityToolError}
+              formData={visibilityToolFormData}
+              generating={visibilityToolGenerating}
+              output={visibilityToolOutput}
+              photoAssets={photoAssets}
+              photoAsset={selectedVisibilityPhotoAsset}
+              profile={businessProfile}
+              tool={selectedVisibilityTool}
+              enabledDestinations={enabledLocalReachDestinations}
+              onCancel={closeVisibilityTool}
+              onChange={updateVisibilityToolFormData}
+              onCopy={() => void handleCopyVisibilityToolOutput()}
+              onGenerate={() => void handleGenerateVisibilityTool()}
+              onOutputChange={(output) => {
+                setVisibilityToolCopied(false);
+                setVisibilityToolOutput((current) => ({
+                  ...(current ?? { generationMode: 'fallback' }),
+                  primary: output,
+                }));
+              }}
+            />
+          ) : null}
         </section>
       ) : null}
 
@@ -4658,31 +4691,6 @@ function App() {
           onCancel={() => setShowManualPostModal(false)}
           onChange={setManualPostSettings}
           onGenerate={(settings) => void handleGenerateManualPost(settings)}
-        />
-      ) : null}
-      {selectedVisibilityTool ? (
-        <VisibilityToolModal
-          copied={visibilityToolCopied}
-          error={visibilityToolError}
-          formData={visibilityToolFormData}
-          generating={visibilityToolGenerating}
-          output={visibilityToolOutput}
-          photoAssets={photoAssets}
-          photoAsset={selectedVisibilityPhotoAsset}
-          profile={businessProfile}
-          tool={selectedVisibilityTool}
-          enabledDestinations={enabledLocalReachDestinations}
-          onCancel={closeVisibilityTool}
-          onChange={updateVisibilityToolFormData}
-          onCopy={() => void handleCopyVisibilityToolOutput()}
-          onGenerate={() => void handleGenerateVisibilityTool()}
-          onOutputChange={(output) => {
-            setVisibilityToolOutput((current) => ({
-              ...(current ?? { generationMode: 'fallback' }),
-              primary: output,
-            }));
-            setVisibilityToolCopied(false);
-          }}
         />
       ) : null}
       {selectedContentSlot ? (
@@ -5829,7 +5837,6 @@ function VisibilityToolModal({
   onGenerate: () => void;
   onOutputChange: (output: string) => void;
 }) {
-  useBodyScrollLock();
   const serviceOptions = profile.services_offered.filter((service) => service.trim());
   const locationOptions = profile.service_area_cities.filter((location) => location.trim());
   const supportsPhoto = visibilityToolSupportsPhoto(tool.id);
@@ -5841,23 +5848,15 @@ function VisibilityToolModal({
   const localReachDestinations = enabledDestinations.length > 0 ? enabledDestinations : localReachDestinationOptions;
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section
-        className="modal-panel visibility-tool-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="visibility-tool-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <div>
-            <h2 id="visibility-tool-title">{tool.title}</h2>
-            <p>{tool.description}</p>
-          </div>
-          {tool.id === 'local-reach-post' && formData.destination === 'Facebook Group' ? (
-            <span className="manual-post-pill">Manual posting only</span>
-          ) : null}
+    <section className="visibility-tool-workbench" aria-labelledby="visibility-tool-title">
+      <div className="visibility-workbench-heading">
+        <div>
+          <h2 id="visibility-tool-title">{tool.title}</h2>
         </div>
+        {tool.id === 'local-reach-post' && formData.destination === 'Facebook Group' ? (
+          <span className="manual-post-pill">Manual posting only</span>
+        ) : null}
+      </div>
 
         <datalist id={serviceListId}>
           {serviceOptions.map((service) => (
@@ -6183,16 +6182,15 @@ function VisibilityToolModal({
           )}
         </section>
 
-        <div className="modal-actions">
+        <div className="modal-actions visibility-tool-actions">
           <button type="button" onClick={onCancel}>
-            Cancel
+            Reset
           </button>
           <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
             {generating ? 'Generating...' : 'Generate'}
           </button>
         </div>
-      </section>
-    </div>
+    </section>
   );
 }
 
