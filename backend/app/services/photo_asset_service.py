@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 from typing import Any
 from uuid import uuid4
 
@@ -23,10 +25,23 @@ PHOTO_ASSET_MIME_EXTENSIONS = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+PHOTO_ASSET_TEMP_ROOT = "gomez-ops-photo-assets"
 
 
 class PhotoAssetDataError(RuntimeError):
     """Raised when local photo asset persistence cannot be read or written."""
+
+
+def get_default_photo_asset_data_file() -> Path:
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / PHOTO_ASSET_TEMP_ROOT / "photo_assets.json"
+    return Path(__file__).resolve().parents[2] / "data" / "photo_assets.json"
+
+
+def get_default_photo_asset_media_dir() -> Path:
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / PHOTO_ASSET_TEMP_ROOT / "media"
+    return Path(__file__).resolve().parents[2] / "media" / "photo-assets"
 
 
 class PhotoAssetService:
@@ -45,11 +60,10 @@ class PhotoAssetService:
         public_path_prefix: str = "/media/photo-assets",
     ) -> None:
         self.settings = settings_override or settings
-        backend_root = Path(__file__).resolve().parents[2]
         configured_data_file = Path(self.settings.photo_assets_data_file) if self.settings.photo_assets_data_file else None
         configured_media_dir = Path(self.settings.photo_assets_media_dir) if self.settings.photo_assets_media_dir else None
-        self.data_file = data_file or configured_data_file or backend_root / "data" / "photo_assets.json"
-        self.media_dir = media_dir or configured_media_dir or backend_root / "media" / "photo-assets"
+        self.data_file = data_file or configured_data_file or get_default_photo_asset_data_file()
+        self.media_dir = media_dir or configured_media_dir or get_default_photo_asset_media_dir()
         self.public_path_prefix = public_path_prefix.rstrip("/")
         self.default_business_id = self.settings.default_business_id or DEFAULT_PHOTO_ASSET_BUSINESS_ID
 
@@ -193,8 +207,8 @@ class PhotoAssetService:
     def _parse_image_data(image_data: str) -> tuple[str | None, str]:
         match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(?P<data>.+)$", image_data, flags=re.DOTALL)
         if match:
-            return match.group(1).lower(), match.group("data")
-        return None, image_data
+            return match.group(1).lower(), re.sub(r"\s+", "", match.group("data"))
+        return None, re.sub(r"\s+", "", image_data)
 
     @staticmethod
     def _image_extension(mime_type: str | None, image_filename: str | None) -> str:

@@ -1,5 +1,5 @@
 from app.models.photo_asset import PhotoAssetCreateRequest, PhotoAssetUpdateRequest
-from app.services.photo_asset_service import PhotoAssetService
+from app.services.photo_asset_service import PHOTO_ASSET_TEMP_ROOT, PhotoAssetService
 
 
 def _photo_service(tmp_path) -> PhotoAssetService:
@@ -81,3 +81,27 @@ def test_photo_asset_service_scopes_assets_by_business_id(tmp_path) -> None:
     assert service.list_photo_assets("other-business") == [other_asset]
     assert service.delete_photo_asset(other_asset.id) is None
     assert service.delete_photo_asset(other_asset.id, business_id="other-business") == other_asset
+
+
+def test_photo_asset_service_accepts_wrapped_base64_image_data(tmp_path) -> None:
+    service = _photo_service(tmp_path)
+
+    asset = service.create_photo_asset(
+        PhotoAssetCreateRequest(
+            image_data="data:image/png;base64,aGVs\nbG8=",
+            image_filename="wrapped.png",
+            title="Wrapped Base64",
+            category="Interior",
+        )
+    )
+
+    assert (tmp_path / "media" / asset.image_filename).read_bytes() == b"hello"
+
+
+def test_photo_asset_service_uses_writable_temp_paths_on_vercel(monkeypatch) -> None:
+    monkeypatch.setenv("VERCEL", "1")
+
+    service = PhotoAssetService()
+
+    assert PHOTO_ASSET_TEMP_ROOT in str(service.data_file)
+    assert PHOTO_ASSET_TEMP_ROOT in str(service.media_dir)

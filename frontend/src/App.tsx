@@ -119,6 +119,25 @@ type StoredPhotoAssetPayload = Partial<PhotoAssetPayload> & {
   used_count?: number;
 };
 
+type BodyScrollLockPreviousStyles = {
+  left: string;
+  overflow: string;
+  position: string;
+  right: string;
+  top: string;
+  width: string;
+};
+
+const bodyScrollLockState: {
+  count: number;
+  previousStyles: BodyScrollLockPreviousStyles | null;
+  scrollY: number;
+} = {
+  count: 0,
+  previousStyles: null,
+  scrollY: 0,
+};
+
 type WeeklyScheduleSettings = {
   weekStartDate: string;
   contentDays: number;
@@ -1073,6 +1092,50 @@ function createEmptyPhotoAssetDraft(): PhotoAssetDraft {
     tagsText: '',
     quality: 'standard',
   };
+}
+
+function useBodyScrollLock(active = true) {
+  useEffect(() => {
+    if (!active || typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+
+    const { body } = document;
+    if (bodyScrollLockState.count === 0) {
+      bodyScrollLockState.scrollY = window.scrollY;
+      bodyScrollLockState.previousStyles = {
+        left: body.style.left,
+        overflow: body.style.overflow,
+        position: body.style.position,
+        right: body.style.right,
+        top: body.style.top,
+        width: body.style.width,
+      };
+      body.style.left = '0';
+      body.style.overflow = 'hidden';
+      body.style.position = 'fixed';
+      body.style.right = '0';
+      body.style.top = `-${bodyScrollLockState.scrollY}px`;
+      body.style.width = '100%';
+    }
+    bodyScrollLockState.count += 1;
+
+    return () => {
+      bodyScrollLockState.count = Math.max(0, bodyScrollLockState.count - 1);
+      if (bodyScrollLockState.count > 0) return;
+
+      const previousStyles = bodyScrollLockState.previousStyles;
+      if (previousStyles) {
+        body.style.left = previousStyles.left;
+        body.style.overflow = previousStyles.overflow;
+        body.style.position = previousStyles.position;
+        body.style.right = previousStyles.right;
+        body.style.top = previousStyles.top;
+        body.style.width = previousStyles.width;
+      }
+      window.scrollTo(0, bodyScrollLockState.scrollY);
+      bodyScrollLockState.previousStyles = null;
+      bodyScrollLockState.scrollY = 0;
+    };
+  }, [active]);
 }
 
 function createPhotoAssetDraft(asset: PhotoAsset): PhotoAssetDraft {
@@ -2250,6 +2313,20 @@ function App() {
     if (!photoPickerContentSlotId) return null;
     return weeklyContentSlots.find((slot) => slot.id === photoPickerContentSlotId) ?? null;
   }, [photoPickerContentSlotId, weeklyContentSlots]);
+
+  useBodyScrollLock(
+    Boolean(
+      selectedVisibilityToolId ||
+        showWeeklyScheduleModal ||
+        showManualPostModal ||
+        selectedContentSlot ||
+        pendingDeleteContentSlot ||
+        photoPickerContentSlot ||
+        postAssistantItem ||
+        preview ||
+        campaignPreview,
+    ),
+  );
 
   const previousWeeklyPosts = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status === 'Posted' || item.status === 'Skipped');
@@ -4987,6 +5064,7 @@ function PhotoAssetModal({
   onFileSelect: (file: File | null) => Promise<void>;
   onSave: () => void;
 }) {
+  useBodyScrollLock();
   const imageSource = getPhotoAssetPreviewUrl(draft);
 
   return (
@@ -5123,6 +5201,8 @@ function DeletePhotoAssetConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  useBodyScrollLock();
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
       <section
@@ -5212,6 +5292,8 @@ function DeleteContentSlotConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  useBodyScrollLock();
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
       <section
@@ -5276,6 +5358,7 @@ function VisibilityToolModal({
   onGenerate: () => void;
   onOutputChange: (output: string) => void;
 }) {
+  useBodyScrollLock();
   const serviceOptions = profile.services_offered.filter((service) => service.trim());
   const locationOptions = profile.service_area_cities.filter((location) => location.trim());
   const supportsPhoto = visibilityToolSupportsPhoto(tool.id);
@@ -5655,6 +5738,8 @@ function WeeklyScheduleModal({
   onChange: (settings: WeeklyScheduleSettings) => void;
   onGenerate: (settings: WeeklyScheduleSettings) => void;
 }) {
+  useBodyScrollLock();
+
   function updateSettings(update: Partial<WeeklyScheduleSettings>) {
     onChange({ ...settings, ...update });
   }
@@ -5793,6 +5878,8 @@ function ManualPostModal({
   onChange: (settings: ManualPostSettings) => void;
   onGenerate: (settings: ManualPostSettings) => void;
 }) {
+  useBodyScrollLock();
+
   function updateSettings(update: Partial<ManualPostSettings>) {
     onChange({ ...settings, ...update });
   }
@@ -5964,6 +6051,8 @@ function PhotoAssetPickerModal({
   onCancel: () => void;
   onSelect: (asset: PhotoAsset) => void;
 }) {
+  useBodyScrollLock();
+
   const sortedAssets = [...assets].sort((a, b) => {
     const qualityCompare =
       photoAssetQualityScore[b.quality] - photoAssetQualityScore[a.quality];
@@ -6069,6 +6158,8 @@ function ContentSlotDetailModal({
   onSaveDraft: (item: CampaignContentQueueItem) => Promise<void>;
   onStartEdit: (item: CampaignContentQueueItem) => void;
 }) {
+  useBodyScrollLock();
+
   const missingCorePlatforms = coreCalendarPlatforms.filter((platform) => !getPlatformBadgeState(slot, platform));
 
   return (
@@ -6252,6 +6343,8 @@ function DraftPreview({
   preview: { job: CompletedJob; draft: ContentDraft };
   onClose: () => void;
 }) {
+  useBodyScrollLock();
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
@@ -6290,6 +6383,8 @@ function CampaignDraftPreview({
   preview: { campaign: Campaign; draftSet: CampaignDraftSet };
   onClose: () => void;
 }) {
+  useBodyScrollLock();
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
