@@ -1,5 +1,22 @@
 [
   {
+    "id": "photo-29eebe1a5e6a",
+    "business_id": "marom-painting",
+    "image_url": null,
+    "image_path": "/media/photo-assets/79669383935-a4b23eba-5aee-456a-a722-dd8f63dd8194-photo-29eebe1a5e6a.jpg",
+    "image_filename": "79669383935-a4b23eba-5aee-456a-a722-dd8f63dd8194-photo-29eebe1a5e6a.jpg",
+    "title": "Test",
+    "description": "",
+    "category": "Interior",
+    "service_type": "Interior painting",
+    "location": "Oak Lawn",
+    "tags": [],
+    "quality": "strong",
+    "used_count": 0,
+    "created_at": "2026-05-13T05:44:58Z",
+    "updated_at": "2026-05-13T05:44:58Z"
+  },
+  {
     "id": "photo-77966729695d",
     "business_id": "marom-painting",
     "image_url": null,

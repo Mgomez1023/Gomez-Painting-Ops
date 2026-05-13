@@ -866,8 +866,10 @@ th {
   font-size: 18px;
 }
 
-.photo-asset-modal {
+.standard-modal.photo-asset-modal {
+  max-height: calc(100dvh - 32px);
   max-width: 640px;
+  width: min(640px, calc(100vw - 32px));
 }
 
 .photo-picker-modal {
@@ -1180,7 +1182,7 @@ th {
   background: #ffffff;
   border: 1px solid #d8ded9;
   border-radius: 12px;
-  cursor: grab;
+  cursor: pointer;
   display: grid;
   gap: 0;
   min-height: 0;
@@ -1204,10 +1206,6 @@ th {
   transform: translateY(-2px);
 }
 
-.content-slot-card:active {
-  cursor: grabbing;
-}
-
 .content-slot-card-dragging {
   border-color: #8ba393;
   border-style: dashed;
@@ -1218,29 +1216,41 @@ th {
 
 .content-slot-drag-affordance {
   align-items: center;
-  background: transparent;
-  border-top: 0;
-  bottom: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(96, 112, 103, 0.26);
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(23, 32, 27, 0.12);
+  color: #3e4b42;
   cursor: grab;
-  display: flex;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  gap: 5px;
   justify-content: center;
-  min-height: 10px;
-  padding: 0;
+  line-height: 1;
+  min-height: 30px;
+  min-width: 64px;
+  padding: 0 9px;
   position: absolute;
   right: 8px;
+  top: 8px;
   touch-action: none;
+  user-select: none;
+  z-index: 2;
 }
 
 .content-slot-drag-affordance::before {
-  background: #d4dcd6;
-  border-radius: 999px;
+  background:
+    radial-gradient(circle, #607067 1.4px, transparent 1.8px) 0 0 / 5px 5px,
+    radial-gradient(circle, #607067 1.4px, transparent 1.8px) 2.5px 2.5px / 5px 5px;
   content: "";
   display: block;
-  height: 3px;
-  width: 26px;
+  height: 14px;
+  opacity: 0.82;
+  width: 14px;
 }
 
-.content-slot-card:active .content-slot-drag-affordance {
+.content-slot-drag-affordance:active {
   cursor: grabbing;
 }
 
@@ -2997,8 +3007,10 @@ th {
     padding: 12px 14px;
   }
 
-  .photo-asset-modal {
+  .standard-modal.photo-asset-modal {
+    max-height: calc(100dvh - 40px);
     max-width: none;
+    width: min(440px, calc(100vw - 40px));
   }
 
   .photo-asset-form {

@@ -256,6 +256,8 @@ type CalendarDragCandidate = {
   phase: 'pending' | 'dragging';
   slotId: string;
   originDayIndex: number;
+  handleElement: HTMLElement;
+  longPressTimerId: number | null;
   pointerId: number;
   pointerType: string;
   startX: number;
@@ -1120,13 +1122,6 @@ function isInteractiveElement(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(interactiveElementSelector));
 }
 
-function isNestedInteractiveElement(target: EventTarget | null, container: Element): boolean {
-  if (!isInteractiveElement(target)) return false;
-  if (!(target instanceof Element)) return false;
-  const interactiveElement = target.closest(interactiveElementSelector);
-  return Boolean(interactiveElement && interactiveElement !== container);
-}
-
 function restoreBodyScrollLockStyles() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
@@ -1192,6 +1187,13 @@ function cleanupAllBodyScrollLocks() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   bodyScrollLockState.locks.clear();
   restoreBodyScrollLockStyles();
+}
+
+function clearBodyInteractionLocks() {
+  cleanupAllBodyScrollLocks();
+  if (typeof document !== 'undefined') {
+    document.body.classList.remove('calendar-drag-active');
+  }
 }
 
 function useBodyScrollLock(active = true) {
@@ -2313,10 +2315,22 @@ function App() {
   }, [calendarDrag]);
 
   useEffect(() => {
+    if (!calendarDrag) return undefined;
+
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        cancelCalendarDrag();
+      }
+    };
+
+    window.addEventListener('keydown', cancelOnEscape);
+    return () => window.removeEventListener('keydown', cancelOnEscape);
+  }, [calendarDrag]);
+
+  useEffect(() => {
     return () => {
-      calendarDragCandidateRef.current = null;
-      document.body.classList.remove('calendar-drag-active');
-      cleanupAllBodyScrollLocks();
+      cancelCalendarDrag();
+      clearBodyInteractionLocks();
     };
   }, []);
 
@@ -2394,19 +2408,25 @@ function App() {
     return weeklyContentSlots.find((slot) => slot.id === photoPickerContentSlotId) ?? null;
   }, [photoPickerContentSlotId, weeklyContentSlots]);
 
-  useBodyScrollLock(
-    Boolean(
-      selectedVisibilityToolId ||
-        showWeeklyScheduleModal ||
-        showManualPostModal ||
-        selectedContentSlot ||
-        pendingDeleteContentSlot ||
-        photoPickerContentSlot ||
-        postAssistantItem ||
-        preview ||
-        campaignPreview,
-    ),
+  const appModalOpen = Boolean(
+    selectedVisibilityToolId ||
+      showWeeklyScheduleModal ||
+      showManualPostModal ||
+      selectedContentSlot ||
+      pendingDeleteContentSlot ||
+      photoPickerContentSlot ||
+      postAssistantItem ||
+      preview ||
+      campaignPreview,
   );
+
+  useBodyScrollLock(appModalOpen);
+
+  useEffect(() => {
+    if (appModalOpen || activeSection !== 'calendar') {
+      cancelCalendarDrag();
+    }
+  }, [activeSection, appModalOpen]);
 
   const previousWeeklyPosts = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status === 'Posted' || item.status === 'Skipped');
@@ -3309,21 +3329,108 @@ function App() {
     return target;
   }
 
-  function handleContentSlotPointerDown(event: ReactPointerEvent<HTMLButtonElement>, slot: ContentSlot) {
-    if (!event.isPrimary || event.button !== 0 || busyAction || calendarDrag) return;
+  function releaseCalendarDragPointerCapture(candidate: CalendarDragCandidate) {
+    try {
+      if (candidate.handleElement.hasPointerCapture(candidate.pointerId)) {
+        candidate.handleElement.releasePointerCapture(candidate.pointerId);
+      }
+    } catch {
+      // Pointer capture can already be gone if the source element was unmounted.
+    }
+  }
 
-    const targetElement = event.target instanceof Element ? event.target : null;
-    const dragHandle = targetElement?.closest('[data-calendar-drag-handle="true"]');
-    if (targetElement && isNestedInteractiveElement(targetElement, event.currentTarget) && !dragHandle) {
+  function clearCalendarDragCandidate() {
+    const candidate = calendarDragCandidateRef.current;
+    if (!candidate) return;
+
+    if (candidate.longPressTimerId !== null) {
+      window.clearTimeout(candidate.longPressTimerId);
+    }
+    releaseCalendarDragPointerCapture(candidate);
+    calendarDragCandidateRef.current = null;
+  }
+
+  function cancelCalendarDrag() {
+    clearCalendarDragCandidate();
+    setCalendarDrag(null);
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('calendar-drag-active');
+    }
+  }
+
+  function startCalendarDrag(candidate: CalendarDragCandidate, clientX: number, clientY: number) {
+    if (appModalOpen || activeSection !== 'calendar' || busyAction) {
+      cancelCalendarDrag();
+      return false;
+    }
+
+    if (candidate.longPressTimerId !== null) {
+      window.clearTimeout(candidate.longPressTimerId);
+      candidate.longPressTimerId = null;
+    }
+    candidate.phase = 'dragging';
+
+    try {
+      if (!candidate.handleElement.hasPointerCapture(candidate.pointerId)) {
+        candidate.handleElement.setPointerCapture(candidate.pointerId);
+      }
+    } catch {
+      // Pointer capture is a convenience here; the drag still cleans up without it.
+    }
+
+    suppressContentSlotClickRef.current = true;
+    const target = detectCalendarDropTarget(clientX, clientY);
+    setCalendarDrag({
+      phase: 'dragging',
+      slotId: candidate.slotId,
+      originDayIndex: candidate.originDayIndex,
+      pointerType: candidate.pointerType,
+      currentX: clientX,
+      currentY: clientY,
+      grabOffsetX: candidate.grabOffsetX,
+      grabOffsetY: candidate.grabOffsetY,
+      sourceWidth: candidate.sourceWidth,
+      sourceHeight: candidate.sourceHeight,
+      overDayIndex: target.overTrash ? null : target.dayIndex,
+      overTrash: target.overTrash,
+    });
+    return true;
+  }
+
+  function handleContentSlotDragHandlePointerDown(event: ReactPointerEvent<HTMLElement>, slot: ContentSlot) {
+    if (!event.isPrimary || event.button !== 0 || busyAction || calendarDrag || appModalOpen || activeSection !== 'calendar') {
       return;
     }
-    if (event.pointerType !== 'mouse' && !dragHandle) return;
 
-    const sourceRect = event.currentTarget.getBoundingClientRect();
+    const targetElement = event.target instanceof Element ? event.target : null;
+    if (targetElement && isInteractiveElement(targetElement) && !targetElement.closest('[data-calendar-drag-handle="true"]')) {
+      return;
+    }
+
+    const sourceCard = event.currentTarget.closest('[data-content-slot-card="true"]');
+    if (!(sourceCard instanceof HTMLElement)) return;
+
+    event.stopPropagation();
+
+    const sourceRect = sourceCard.getBoundingClientRect();
+    const handleElement = event.currentTarget;
+    const longPressTimerId =
+      event.pointerType === 'touch' || event.pointerType === 'pen'
+        ? window.setTimeout(() => {
+            const pendingCandidate = calendarDragCandidateRef.current;
+            if (!pendingCandidate || pendingCandidate.pointerId !== event.pointerId || pendingCandidate.phase !== 'pending') {
+              return;
+            }
+            startCalendarDrag(pendingCandidate, pendingCandidate.startX, pendingCandidate.startY);
+          }, 220)
+        : null;
+
     calendarDragCandidateRef.current = {
       phase: 'pending',
       slotId: slot.id,
       originDayIndex: slot.dayIndex,
+      handleElement,
+      longPressTimerId,
       pointerId: event.pointerId,
       pointerType: event.pointerType,
       startX: event.clientX,
@@ -3335,9 +3442,11 @@ function App() {
     };
   }
 
-  function handleContentSlotPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+  function handleContentSlotDragHandlePointerMove(event: ReactPointerEvent<HTMLElement>) {
     const candidate = calendarDragCandidateRef.current;
     if (!candidate || candidate.pointerId !== event.pointerId) return;
+
+    event.stopPropagation();
 
     const deltaX = event.clientX - candidate.startX;
     const deltaY = event.clientY - candidate.startY;
@@ -3348,33 +3457,13 @@ function App() {
 
     if (candidate.phase === 'pending') {
       if (event.pointerType !== 'mouse' && absY > 10 && absY > absX * 1.35) {
-        calendarDragCandidateRef.current = null;
+        clearCalendarDragCandidate();
         return;
       }
       if (movement < dragThreshold) return;
 
-      candidate.phase = 'dragging';
-      if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      }
+      if (!startCalendarDrag(candidate, event.clientX, event.clientY)) return;
       event.preventDefault();
-      suppressContentSlotClickRef.current = true;
-
-      const target = detectCalendarDropTarget(event.clientX, event.clientY);
-      setCalendarDrag({
-        phase: 'dragging',
-        slotId: candidate.slotId,
-        originDayIndex: candidate.originDayIndex,
-        pointerType: candidate.pointerType,
-        currentX: event.clientX,
-        currentY: event.clientY,
-        grabOffsetX: candidate.grabOffsetX,
-        grabOffsetY: candidate.grabOffsetY,
-        sourceWidth: candidate.sourceWidth,
-        sourceHeight: candidate.sourceHeight,
-        overDayIndex: target.overTrash ? null : target.dayIndex,
-        overTrash: target.overTrash,
-      });
       return;
     }
 
@@ -3383,19 +3472,18 @@ function App() {
     updateCalendarDragTarget(event.clientX, event.clientY);
   }
 
-  function handleContentSlotPointerEnd(event: ReactPointerEvent<HTMLButtonElement>) {
+  function handleContentSlotDragHandlePointerEnd(event: ReactPointerEvent<HTMLElement>) {
     const candidate = calendarDragCandidateRef.current;
     if (!candidate || candidate.pointerId !== event.pointerId) return;
+
+    event.stopPropagation();
 
     const wasDragging = candidate.phase === 'dragging';
     const canceled = event.type === 'pointercancel';
     const target = wasDragging && !canceled ? detectCalendarDropTarget(event.clientX, event.clientY) : null;
     const activeSlotId = candidate.slotId;
 
-    calendarDragCandidateRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    clearCalendarDragCandidate();
 
     if (!wasDragging) return;
 
@@ -3417,6 +3505,16 @@ function App() {
 
     if (target?.dayIndex !== null && target?.dayIndex !== undefined) {
       void moveContentSlotToDay(activeSlot, target.dayIndex);
+    }
+  }
+
+  function handleContentSlotDragHandleClick(event: ReactMouseEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const candidate = calendarDragCandidateRef.current;
+    if (candidate?.phase === 'pending') {
+      clearCalendarDragCandidate();
     }
   }
 
@@ -3795,15 +3893,12 @@ function App() {
                     const usesPhotoLibrary = contentSlotUsesPhotoLibrary(slot, photoAssets);
                     return (
                       <button
-                        aria-label={`Open or drag ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
+                        aria-label={`Open ${slot.title}, scheduled for ${formatDisplayDate(slot.scheduledAt)}`}
                         className={`content-slot-card ${calendarDrag?.slotId === slot.id ? 'content-slot-card-dragging' : ''}`}
+                        data-content-slot-card="true"
                         key={slot.id}
                         type="button"
                         onClick={(event) => handleContentSlotClick(event, slot)}
-                        onPointerCancel={handleContentSlotPointerEnd}
-                        onPointerDown={(event) => handleContentSlotPointerDown(event, slot)}
-                        onPointerMove={handleContentSlotPointerMove}
-                        onPointerUp={handleContentSlotPointerEnd}
                       >
                         <div className="content-slot-media">
                           {slot.imageSource ? (
@@ -3862,7 +3957,17 @@ function App() {
                             <span>{slot.platformPosts.length} platform posts</span>
                           </div>
                         </div>
-                        <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" aria-hidden="true" />
+                        <div
+                          className="content-slot-drag-affordance"
+                          data-calendar-drag-handle="true"
+                          onClick={handleContentSlotDragHandleClick}
+                          onPointerCancel={handleContentSlotDragHandlePointerEnd}
+                          onPointerDown={(event) => handleContentSlotDragHandlePointerDown(event, slot)}
+                          onPointerMove={handleContentSlotDragHandlePointerMove}
+                          onPointerUp={handleContentSlotDragHandlePointerEnd}
+                        >
+                          <span>Move</span>
+                        </div>
                       </button>
                     );
                   })}
@@ -5166,7 +5271,6 @@ function PhotoAssetModal({
   onFileSelect: (file: File | null) => Promise<void>;
   onSave: () => void;
 }) {
-  const imageSource = getPhotoAssetPreviewUrl(draft);
   const photoAssetFormId = 'photo-asset-modal-form';
 
   return (
@@ -5198,99 +5302,130 @@ function PhotoAssetModal({
         </div>
       ) : null}
 
-      <form
-        className="photo-asset-form"
-        id={photoAssetFormId}
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSave();
-        }}
-      >
-        <div className="photo-asset-preview-panel">
-          <div className="photo-upload-preview">
-            {imageSource ? (
-              <img alt={draft.title || 'Selected photo asset'} src={imageSource} />
-            ) : (
-              <span>No image selected</span>
-            )}
-          </div>
-          <label className="form-field">
-            <span>Image file</span>
-            <input
-              accept="image/*"
-              type="file"
-              onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
-            />
-            <small>
-              {busyAction === 'image'
-                ? 'Preparing image preview...'
-                : editing
-                  ? 'Current image is retained unless a new file is selected.'
-                  : 'Upload a project photo to save it in the backend Photo Library.'}
-            </small>
-          </label>
-        </div>
-        <div className="photo-asset-fields">
-          <label className="form-field">
-            <span>Title</span>
-            <input value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
-          </label>
-          <label className="form-field">
-            <span>Category</span>
-            <select value={draft.category} onChange={(event) => onChange('category', event.target.value as PhotoAssetCategory)}>
-              {photoAssetCategories.map((category) => (
-                <option key={category} value={category}>
-                  {category}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Service type</span>
-            <input
-              list="photo-service-options"
-              value={draft.service_type}
-              onChange={(event) => onChange('service_type', event.target.value)}
-            />
-            <datalist id="photo-service-options">
-              {serviceOptions.map((service) => (
-                <option key={service} value={service} />
-              ))}
-            </datalist>
-          </label>
-          <label className="form-field">
-            <span>Location / city</span>
-            <input value={draft.location} onChange={(event) => onChange('location', event.target.value)} />
-          </label>
-          <label className="form-field">
-            <span>Quality / usefulness</span>
-            <select value={draft.quality} onChange={(event) => onChange('quality', event.target.value as PhotoAssetQuality)}>
-              {photoAssetQualityOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Tags</span>
-            <input
-              placeholder="kitchen, neutral colors, oak park"
-              value={draft.tagsText}
-              onChange={(event) => onChange('tagsText', event.target.value)}
-            />
-          </label>
-          <label className="form-field form-field-wide">
-            <span>Description / context</span>
-            <textarea
-              value={draft.description}
-              onChange={(event) => onChange('description', event.target.value)}
-              placeholder="What makes this photo useful for future posts?"
-            />
-          </label>
-        </div>
-      </form>
+      <PhotoAssetForm
+        busyAction={busyAction}
+        draft={draft}
+        editing={editing}
+        formId={photoAssetFormId}
+        serviceOptions={serviceOptions}
+        onChange={onChange}
+        onFileSelect={onFileSelect}
+        onSave={onSave}
+      />
     </StandardModal>
+  );
+}
+
+function PhotoAssetForm({
+  busyAction,
+  draft,
+  editing,
+  formId,
+  serviceOptions,
+  onChange,
+  onFileSelect,
+  onSave,
+}: {
+  busyAction: 'image' | 'save' | null;
+  draft: PhotoAssetDraft;
+  editing: boolean;
+  formId: string;
+  serviceOptions: string[];
+  onChange: <Key extends keyof PhotoAssetDraft>(field: Key, value: PhotoAssetDraft[Key]) => void;
+  onFileSelect: (file: File | null) => Promise<void>;
+  onSave: () => void;
+}) {
+  const imageSource = getPhotoAssetPreviewUrl(draft);
+
+  return (
+    <form
+      className="photo-asset-form"
+      id={formId}
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave();
+      }}
+    >
+      <div className="photo-asset-preview-panel">
+        <div className="photo-upload-preview">
+          {imageSource ? <img alt={draft.title || 'Selected photo asset'} src={imageSource} /> : <span>No image selected</span>}
+        </div>
+        <label className="form-field">
+          <span>Image file</span>
+          <input
+            accept="image/*"
+            type="file"
+            onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
+          />
+          <small>
+            {busyAction === 'image'
+              ? 'Preparing image preview...'
+              : editing
+                ? 'Current image is retained unless a new file is selected.'
+                : 'Upload a project photo to save it in the backend Photo Library.'}
+          </small>
+        </label>
+      </div>
+      <div className="photo-asset-fields">
+        <label className="form-field">
+          <span>Title</span>
+          <input value={draft.title} onChange={(event) => onChange('title', event.target.value)} />
+        </label>
+        <label className="form-field">
+          <span>Category</span>
+          <select value={draft.category} onChange={(event) => onChange('category', event.target.value as PhotoAssetCategory)}>
+            {photoAssetCategories.map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-field">
+          <span>Service type</span>
+          <input
+            list="photo-service-options"
+            value={draft.service_type}
+            onChange={(event) => onChange('service_type', event.target.value)}
+          />
+          <datalist id="photo-service-options">
+            {serviceOptions.map((service) => (
+              <option key={service} value={service} />
+            ))}
+          </datalist>
+        </label>
+        <label className="form-field">
+          <span>Location / city</span>
+          <input value={draft.location} onChange={(event) => onChange('location', event.target.value)} />
+        </label>
+        <label className="form-field">
+          <span>Quality / usefulness</span>
+          <select value={draft.quality} onChange={(event) => onChange('quality', event.target.value as PhotoAssetQuality)}>
+            {photoAssetQualityOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-field form-field-wide">
+          <span>Tags</span>
+          <input
+            placeholder="kitchen, neutral colors, oak park"
+            value={draft.tagsText}
+            onChange={(event) => onChange('tagsText', event.target.value)}
+          />
+        </label>
+        <label className="form-field form-field-wide">
+          <span>Description / context</span>
+          <textarea
+            value={draft.description}
+            onChange={(event) => onChange('description', event.target.value)}
+            placeholder="What makes this photo useful for future posts?"
+          />
+        </label>
+      </div>
+    </form>
   );
 }
 
@@ -5362,7 +5497,7 @@ function CalendarDragPreview({ drag, slot }: { drag: CalendarDragState; slot: Co
   const previewX = Math.max(8, Math.min(rawX, viewportWidth - previewWidth - 8));
   const previewY = Math.max(8, Math.min(rawY, viewportHeight - previewHeight - 8));
 
-  return (
+  const preview = (
     <div
       className="calendar-drag-preview"
       style={{
@@ -5388,6 +5523,8 @@ function CalendarDragPreview({ drag, slot }: { drag: CalendarDragState; slot: Co
       <div className="content-slot-drag-affordance" data-calendar-drag-handle="true" />
     </div>
   );
+
+  return typeof document === 'undefined' ? preview : createPortal(preview, document.body);
 }
 
 function DeleteContentSlotConfirmModal({
@@ -5472,6 +5609,11 @@ function StandardModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
+        onPointerDown={(event) => {
+          backdropPointerStartedRef.current = false;
+          event.stopPropagation();
+        }}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="standard-modal-header">
           <div>
