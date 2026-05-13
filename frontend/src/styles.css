@@ -2009,10 +2009,12 @@ th {
   align-items: center;
   background: rgba(23, 32, 27, 0.58);
   display: flex;
+  height: 100dvh;
   inset: 0;
   justify-content: center;
   padding: 24px;
   position: fixed;
+  width: 100vw;
   z-index: 10;
 }
 
@@ -2028,6 +2030,7 @@ th {
   max-width: 980px;
   overflow: auto;
   padding: 18px;
+  overscroll-behavior: contain;
   width: 100%;
 }
 
@@ -2865,14 +2868,15 @@ th {
   }
 
   .modal-backdrop {
-    align-items: flex-start;
+    align-items: center;
+    height: 100dvh;
     justify-content: center;
     overflow: hidden;
     padding: 10px;
   }
 
   .modal-panel {
-    max-height: calc(100svh - 20px);
+    max-height: calc(100dvh - 20px);
     max-width: calc(100vw - 20px);
     min-width: 0;
     overflow-x: hidden;
@@ -2895,7 +2899,7 @@ th {
   .photo-asset-modal {
     border-radius: 10px;
     margin: 0 auto;
-    max-height: calc(100svh - 20px);
+    max-height: calc(100dvh - 20px);
     max-width: 360px;
     padding: 12px;
     width: min(360px, calc(100vw - 20px));

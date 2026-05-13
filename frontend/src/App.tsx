@@ -120,12 +120,10 @@ type StoredPhotoAssetPayload = Partial<PhotoAssetPayload> & {
 };
 
 type BodyScrollLockPreviousStyles = {
-  left: string;
-  overflow: string;
-  position: string;
-  right: string;
-  top: string;
-  width: string;
+  bodyOverflow: string;
+  bodyOverscrollBehavior: string;
+  documentOverflow: string;
+  documentOverscrollBehavior: string;
 };
 
 const bodyScrollLockState: {
@@ -1099,22 +1097,19 @@ function useBodyScrollLock(active = true) {
     if (!active || typeof window === 'undefined' || typeof document === 'undefined') return undefined;
 
     const { body } = document;
+    const { documentElement } = document;
     if (bodyScrollLockState.count === 0) {
       bodyScrollLockState.scrollY = window.scrollY;
       bodyScrollLockState.previousStyles = {
-        left: body.style.left,
-        overflow: body.style.overflow,
-        position: body.style.position,
-        right: body.style.right,
-        top: body.style.top,
-        width: body.style.width,
+        bodyOverflow: body.style.overflow,
+        bodyOverscrollBehavior: body.style.overscrollBehavior,
+        documentOverflow: documentElement.style.overflow,
+        documentOverscrollBehavior: documentElement.style.overscrollBehavior,
       };
-      body.style.left = '0';
       body.style.overflow = 'hidden';
-      body.style.position = 'fixed';
-      body.style.right = '0';
-      body.style.top = `-${bodyScrollLockState.scrollY}px`;
-      body.style.width = '100%';
+      body.style.overscrollBehavior = 'none';
+      documentElement.style.overflow = 'hidden';
+      documentElement.style.overscrollBehavior = 'none';
     }
     bodyScrollLockState.count += 1;
 
@@ -1124,12 +1119,10 @@ function useBodyScrollLock(active = true) {
 
       const previousStyles = bodyScrollLockState.previousStyles;
       if (previousStyles) {
-        body.style.left = previousStyles.left;
-        body.style.overflow = previousStyles.overflow;
-        body.style.position = previousStyles.position;
-        body.style.right = previousStyles.right;
-        body.style.top = previousStyles.top;
-        body.style.width = previousStyles.width;
+        body.style.overflow = previousStyles.bodyOverflow;
+        body.style.overscrollBehavior = previousStyles.bodyOverscrollBehavior;
+        document.documentElement.style.overflow = previousStyles.documentOverflow;
+        document.documentElement.style.overscrollBehavior = previousStyles.documentOverscrollBehavior;
       }
       window.scrollTo(0, bodyScrollLockState.scrollY);
       bodyScrollLockState.previousStyles = null;
