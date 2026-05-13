@@ -64,7 +64,8 @@ type BusyAction = string | null;
 type PostAssistantCopiedAction = 'caption' | null;
 type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups' | 'Craigslist' | 'Nextdoor';
 type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups';
-type AppSection = 'calendar' | 'visibility-tools' | 'business-profile' | 'photo-library' | 'jobs-queues';
+type AppSection = 'calendar' | 'visibility-tools' | 'business-profile' | 'photo-library' | 'jobs-queues' | 'settings';
+type AppTheme = 'light' | 'dark';
 type VisibilityToolId =
   | 'local-reach-post'
   | 'review-request'
@@ -347,13 +348,13 @@ const campaignPlatformOrder: Record<CampaignContentQueueItem['platform'], number
 };
 
 const calendarDays = [
-  { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
   { key: 'monday', label: 'Monday', shortLabel: 'Mon' },
   { key: 'tuesday', label: 'Tuesday', shortLabel: 'Tue' },
   { key: 'wednesday', label: 'Wednesday', shortLabel: 'Wed' },
   { key: 'thursday', label: 'Thursday', shortLabel: 'Thu' },
   { key: 'friday', label: 'Friday', shortLabel: 'Fri' },
   { key: 'saturday', label: 'Saturday', shortLabel: 'Sat' },
+  { key: 'sunday', label: 'Sunday', shortLabel: 'Sun' },
 ];
 
 const calendarPlatformOrder: Record<CalendarPlatform, number> = {
@@ -387,6 +388,7 @@ const weeklyScheduleContentTypeOptions = [
 const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
 const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
 const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
+const themeStorageKey = 'gomez-ops-theme';
 const defaultPhotoAssetBusinessId = 'marom-painting';
 const maxPhotoAssetDataUrlLength = 2_800_000;
 const businessProfilePlatforms: BusinessProfile['platforms_used'] = [
@@ -456,6 +458,7 @@ const appNavItems: AppNavItem[] = [
   { key: 'photo-library', label: 'Photo Library', description: '' },
   { key: 'jobs-queues', label: 'Jobs + Queues', description: '' },
 ];
+const settingsNavItem: AppNavItem = { key: 'settings', label: 'Settings', description: '' };
 
 const visibilityToolCards: VisibilityToolCard[] = [
   {
@@ -519,7 +522,18 @@ const localReachToneOptions: LocalReachTone[] = [
   'Casual',
 ];
 
-type IconName = 'check' | 'copy' | 'download' | 'edit' | 'menu' | 'restore' | 'save' | 'skip' | 'trash' | 'x';
+type IconName =
+  | 'check'
+  | 'copy'
+  | 'download'
+  | 'edit'
+  | 'menu'
+  | 'restore'
+  | 'save'
+  | 'settings'
+  | 'skip'
+  | 'trash'
+  | 'x';
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, JSX.Element> = {
@@ -561,6 +575,12 @@ function Icon({ name }: { name: IconName }) {
         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
         <path d="M17 21v-8H7v8" />
         <path d="M7 3v5h8" />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 0 1 7.1 4l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
       </>
     ),
     skip: (
@@ -1049,6 +1069,33 @@ function loadStoredBusinessProfile() {
 function storeBusinessProfile(profile: BusinessProfile) {
   // TODO: Replace localStorage with GET/PUT /business-profile when backend settings persistence is added.
   window.localStorage.setItem(businessProfileStorageKey, JSON.stringify(profile));
+}
+
+function normalizeStoredTheme(value: string | null): AppTheme | null {
+  return value === 'light' || value === 'dark' ? value : null;
+}
+
+function loadStoredTheme(): AppTheme {
+  if (typeof window === 'undefined') return 'light';
+
+  try {
+    const storedTheme = normalizeStoredTheme(window.localStorage.getItem(themeStorageKey));
+    if (storedTheme) return storedTheme;
+  } catch {
+    // Ignore localStorage failures and fall back to the system preference.
+  }
+
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function storeTheme(theme: AppTheme) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(themeStorageKey, theme);
+  } catch {
+    // Theme persistence is nice to have; the active theme still applies for this session.
+  }
 }
 
 function weeklyPlatformsFromBusinessProfile(profile: BusinessProfile): WeeklySchedulePlatform[] {
@@ -1589,7 +1636,8 @@ function getContentItemDayIndex(item: CampaignContentQueueItem) {
   const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(dayOfMonth)));
   if (Number.isNaN(date.getTime())) return 0;
 
-  return date.getUTCDay();
+  const utcDay = date.getUTCDay();
+  return utcDay === 0 ? 6 : utcDay - 1;
 }
 
 function getContentSlotTitle(items: CampaignContentQueueItem[]) {
@@ -1956,15 +2004,6 @@ function formatUtcDateInputValue(date: Date) {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
 
-function getCalendarSundayStartDateInput(weekStartDate: string) {
-  const referenceDate = parseDateInputAsUtc(weekStartDate) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
-  if (!referenceDate) return getDefaultWeekStartDateInput();
-
-  const sundayDate = new Date(referenceDate);
-  sundayDate.setUTCDate(referenceDate.getUTCDate() - referenceDate.getUTCDay());
-  return formatUtcDateInputValue(sundayDate);
-}
-
 function getCalendarWeekStartDateForDateInput(dateInput: string) {
   const referenceDate = parseDateInputAsUtc(dateInput) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
   if (!referenceDate) return getDefaultWeekStartDateInput();
@@ -2008,12 +2047,30 @@ function manualPostRequestPlatforms(platforms: WeeklySchedulePlatform[]): Campai
 }
 
 function getWeekdayDateInputValue(weekStartDate: string, dayIndex: number) {
-  const calendarStart = parseDateInputAsUtc(getCalendarSundayStartDateInput(weekStartDate));
+  const calendarStart = parseDateInputAsUtc(weekStartDate) ?? parseDateInputAsUtc(getDefaultWeekStartDateInput());
   if (!calendarStart) return getDefaultWeekStartDateInput();
 
   const scheduledDate = new Date(calendarStart);
   scheduledDate.setUTCDate(calendarStart.getUTCDate() + dayIndex);
   return formatUtcDateInputValue(scheduledDate);
+}
+
+function getDateInputFromScheduledAt(scheduledAt: string | null) {
+  if (!scheduledAt) return null;
+  const dateMatch = scheduledAt.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!dateMatch) return null;
+  return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+}
+
+function getScheduledAtDayIndexInWeek(scheduledAt: string | null, weekStartDate: string) {
+  const scheduledDateInput = getDateInputFromScheduledAt(scheduledAt);
+  const scheduledDate = scheduledDateInput ? parseDateInputAsUtc(scheduledDateInput) : null;
+  const weekStart = parseDateInputAsUtc(weekStartDate);
+  if (!scheduledDate || !weekStart) return null;
+
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+  const dayIndex = Math.round((scheduledDate.getTime() - weekStart.getTime()) / millisecondsPerDay);
+  return dayIndex >= 0 && dayIndex < calendarDays.length ? dayIndex : null;
 }
 
 function recalculateScheduledAtForWeekday(slot: ContentSlot, targetDayIndex: number, weekStartDate: string) {
@@ -2038,6 +2095,23 @@ function moveContentSlotItemsToDay(
   scheduledAt: string,
 ) {
   return items.map((item) => (contentIds.has(item.content_id) ? { ...item, scheduled_at: scheduledAt } : item));
+}
+
+function getMissingContentIds(items: CampaignContentQueueItem[], contentIds: Set<string>) {
+  const returnedIds = new Set(items.map((item) => item.content_id));
+  return Array.from(contentIds).filter((contentId) => !returnedIds.has(contentId));
+}
+
+function findMoveTargetMismatch(
+  items: CampaignContentQueueItem[],
+  contentIds: Set<string>,
+  targetDayIndex: number,
+  weekStartDate: string,
+) {
+  return items.find((item) => {
+    if (!contentIds.has(item.content_id)) return false;
+    return getScheduledAtDayIndexInWeek(getContentItemScheduledAt(item), weekStartDate) !== targetDayIndex;
+  });
 }
 
 function deleteContentSlotItems(items: CampaignContentQueueItem[], contentIds: Set<string>) {
@@ -2147,6 +2221,7 @@ function App() {
   const [warning, setWarning] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [activeSection, setActiveSection] = useState<AppSection>('calendar');
+  const [theme, setTheme] = useState<AppTheme>(() => loadStoredTheme());
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
@@ -2238,9 +2313,12 @@ function App() {
   const loadWeeklyQueue = useCallback(async (weekStartDate = calendarWeekStartDate) => {
     setLoadingWeeklyQueue(true);
     try {
-      setWeeklyQueue(await getWeeklySocialQueue(weekStartDate));
+      const loadedQueue = await getWeeklySocialQueue(weekStartDate);
+      setWeeklyQueue(loadedQueue);
+      return loadedQueue;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load weekly posting queue.');
+      return null;
     } finally {
       setLoadingWeeklyQueue(false);
     }
@@ -2259,6 +2337,11 @@ function App() {
     void loadWeeklyQueue();
     void loadPhotoAssets();
   }, [loadCampaigns, loadPhotoAssets, loadWeeklyQueue]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    storeTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     if (activeSection !== 'jobs-queues') return;
@@ -3082,6 +3165,7 @@ function App() {
     const previousWeeklyQueue = weeklyQueue;
     const contentIds = new Set(slot.sourceItems.map((item) => item.content_id));
     const targetDayLabel = calendarDays[targetDayIndex]?.label ?? 'the selected day';
+    const optimisticWeeklyQueue = moveContentSlotItemsToDay(weeklyQueue, contentIds, scheduledAt);
 
     setError(null);
     setWarning(null);
@@ -3089,9 +3173,37 @@ function App() {
 
     try {
       // TODO: Replace per-platform post schedule updates with a backend ContentSlot move endpoint.
-      await Promise.all(slot.sourceItems.map((item) => updatePostScheduledAt(item.content_id, scheduledAt)));
-      await loadWeeklyQueue(calendarWeekStartDate);
-      setWarning(`Moved "${slot.title}" to ${targetDayLabel}.`);
+      const updatedItems = await Promise.all(slot.sourceItems.map((item) => updatePostScheduledAt(item.content_id, scheduledAt)));
+      const returnedMismatch = findMoveTargetMismatch(updatedItems, contentIds, targetDayIndex, calendarWeekStartDate);
+      if (returnedMismatch) {
+        throw new Error(
+          `Post ${returnedMismatch.content_id} saved outside ${targetDayLabel}. Backend returned scheduled_at ${getContentItemScheduledAt(
+            returnedMismatch,
+          )}.`,
+        );
+      }
+
+      const refreshedQueue = await loadWeeklyQueue(calendarWeekStartDate);
+      if (!refreshedQueue) {
+        setWeeklyQueue(optimisticWeeklyQueue);
+        setWarning(`Moved "${slot.title}" to ${targetDayLabel} (${formatDisplayDate(scheduledAt)}).`);
+        return;
+      }
+
+      const missingContentIds = getMissingContentIds(refreshedQueue, contentIds);
+      const refreshedMismatch = findMoveTargetMismatch(refreshedQueue, contentIds, targetDayIndex, calendarWeekStartDate);
+      if (missingContentIds.length > 0 || refreshedMismatch) {
+        setWeeklyQueue(optimisticWeeklyQueue);
+        const detail = missingContentIds.length > 0
+          ? `Missing after refetch: ${missingContentIds.join(', ')}.`
+          : `Refetched scheduled_at: ${refreshedMismatch ? getContentItemScheduledAt(refreshedMismatch) : 'unknown'}.`;
+        setError(`Move was saved, but the refreshed weekly queue did not keep the post on ${targetDayLabel}. ${detail}`);
+        return;
+      }
+
+      const confirmedItem = refreshedQueue.find((item) => contentIds.has(item.content_id)) ?? updatedItems[0];
+      const confirmedScheduledAt = getContentItemScheduledAt(confirmedItem);
+      setWarning(`Moved "${slot.title}" to ${targetDayLabel} (${formatDisplayDate(confirmedScheduledAt)}).`);
     } catch (err) {
       setWeeklyQueue(previousWeeklyQueue);
       setError(err instanceof Error ? err.message : 'Unable to move content slot.');
@@ -3719,14 +3831,12 @@ function App() {
   const visibleVisibilityToolCards = visibilityToolCards.filter(
     (tool) => tool.id !== 'craigslist-service-ad' || enabledVisibilityChannels.includes('Craigslist'),
   );
-  const activeNavIndex = Math.max(
-    appNavItems.findIndex((item) => item.key === activeSection),
-    0,
-  );
-  const activeNavItem = appNavItems[activeNavIndex] ?? appNavItems[0];
+  const activeMainNavIndex = appNavItems.findIndex((item) => item.key === activeSection);
+  const activeNavItem = activeSection === 'settings' ? settingsNavItem : appNavItems[Math.max(activeMainNavIndex, 0)] ?? appNavItems[0];
   const sidebarNavStyle = {
-    '--active-index': activeNavIndex,
-  } as CSSProperties & Record<'--active-index', number>;
+    '--active-index': Math.max(activeMainNavIndex, 0),
+    '--active-opacity': activeMainNavIndex >= 0 ? 1 : 0,
+  } as CSSProperties & Record<'--active-index' | '--active-opacity', number>;
   const businessSubtitle = businessProfile.business_name
     ? `${businessProfile.business_name} content operations`
     : 'Marom Painting content operations';
@@ -3770,6 +3880,17 @@ function App() {
           >
             <Icon name="restore" />
             <span>Refresh</span>
+          </button>
+          <button
+            className={`sidebar-refresh-button sidebar-settings-button ${activeSection === 'settings' ? 'active' : ''}`}
+            type="button"
+            onClick={() => {
+              setActiveSection('settings');
+              setMobileNavOpen(false);
+            }}
+          >
+            <Icon name="settings" />
+            <span>Settings</span>
           </button>
         </div>
       </aside>
@@ -4085,6 +4206,13 @@ function App() {
           businessName={businessProfile.business_name}
           serviceOptions={businessProfile.services_offered}
           onAssetsChange={setPhotoAssets}
+        />
+      ) : null}
+
+      {activeSection === 'settings' ? (
+        <SettingsSection
+          theme={theme}
+          onThemeChange={(nextTheme) => setTheme(nextTheme)}
         />
       ) : null}
 
@@ -4897,6 +5025,41 @@ function BusinessProfileSection({
             </button>
           </div>
         </details>
+      </div>
+    </section>
+  );
+}
+
+function SettingsSection({
+  theme,
+  onThemeChange,
+}: {
+  theme: AppTheme;
+  onThemeChange: (theme: AppTheme) => void;
+}) {
+  const darkModeEnabled = theme === 'dark';
+
+  return (
+    <section className="panel settings-panel">
+      <div className="panel-heading weekly-heading">
+        <div>
+          <h2>Settings</h2>
+          <p>Manage app preferences.</p>
+        </div>
+      </div>
+      <div className="settings-list">
+        <label className="settings-row">
+          <div>
+            <strong>Dark Mode</strong>
+            <span>Switch the dashboard to a darker color theme.</span>
+          </div>
+          <input
+            aria-label="Dark Mode"
+            checked={darkModeEnabled}
+            type="checkbox"
+            onChange={(event) => onThemeChange(event.currentTarget.checked ? 'dark' : 'light')}
+          />
+        </label>
       </div>
     </section>
   );
