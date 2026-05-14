@@ -328,6 +328,7 @@ export type PhotoAssetPayload = {
 
 export type WeeklySocialQueueGenerateRequest = {
   campaign_id?: string | null;
+  business_id?: string | null;
   platforms?: CampaignContentQueueItem['platform'][] | null;
   posts_per_platform?: number;
   content_days?: number;
@@ -341,6 +342,7 @@ export type WeeklySocialQueueGenerateRequest = {
 
 export type ManualSocialPostGenerateRequest = {
   campaign_id?: string | null;
+  business_id?: string | null;
   platform?: CampaignContentQueueItem['platform'] | null;
   post_type?: string;
   business_profile?: BusinessProfile | null;

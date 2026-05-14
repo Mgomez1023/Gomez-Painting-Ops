@@ -45,6 +45,7 @@ import {
   runDuePublishing,
   scheduleCampaignContent,
   upsertBusinessContext,
+  updateBusiness,
   updatePostImage,
   updatePostDraftText,
   updatePostScheduledAt,
@@ -52,6 +53,7 @@ import {
 import type {
   BusinessProfile,
   Business,
+  BusinessPayload,
   BusinessContext,
   BusinessContextPayload,
   BusinessPhotoAsset,
@@ -77,6 +79,7 @@ type CalendarPlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook
 type WeeklySchedulePlatform = 'Facebook' | 'Instagram' | 'Google Business' | 'Facebook Groups';
 type AppSection = 'calendar' | 'visibility-tools' | 'business-profile' | 'photo-library' | 'jobs-queues' | 'settings';
 type AppTheme = 'light' | 'dark';
+type ToastType = 'success' | 'error' | 'warning' | 'info';
 type VisibilityToolId =
   | 'local-reach-post'
   | 'review-request'
@@ -111,10 +114,28 @@ type VisibilityChannel =
   | 'General Social Post';
 type SavedGeneratedPostFilter = 'all' | 'reach' | 'review' | 'intro';
 
+type AppToast = {
+  id: string;
+  type: ToastType;
+  title?: string;
+  message: string;
+  durationMs: number;
+  exiting?: boolean;
+};
+
 type BusinessCreateDraft = {
   name: string;
   industry: string;
   location: string;
+};
+
+type ActiveBusinessProfileDraft = {
+  name: string;
+  industry: string;
+  location: string;
+  website_url: string;
+  phone: string;
+  email: string;
 };
 
 type BusinessContextDraft = {
@@ -418,6 +439,8 @@ const activeBusinessIdStorageKey = 'gomez-ops-active-business-id-v1';
 const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
 const themeStorageKey = 'gomez-ops-theme';
 const maxPhotoAssetDataUrlLength = 2_800_000;
+const toastExitAnimationMs = 260;
+const defaultToastDurationMs = 5200;
 const businessProfilePlatforms: BusinessProfile['platforms_used'] = [
   'Facebook',
   'Instagram',
@@ -482,6 +505,15 @@ const defaultBusinessCreateDraft: BusinessCreateDraft = {
   name: '',
   industry: '',
   location: '',
+};
+
+const emptyActiveBusinessProfileDraft: ActiveBusinessProfileDraft = {
+  name: '',
+  industry: '',
+  location: '',
+  website_url: '',
+  phone: '',
+  email: '',
 };
 
 const emptyBusinessContextDraft: BusinessContextDraft = {
@@ -1293,6 +1325,73 @@ function businessContextDraftToPayload(draft: BusinessContextDraft): BusinessCon
   };
 }
 
+function activeBusinessToProfileDraft(business: Business | null): ActiveBusinessProfileDraft {
+  if (!business) return { ...emptyActiveBusinessProfileDraft };
+  return {
+    name: business.name ?? '',
+    industry: business.industry ?? '',
+    location: business.location ?? '',
+    website_url: business.website_url ?? '',
+    phone: business.phone ?? '',
+    email: business.email ?? '',
+  };
+}
+
+function activeBusinessProfileDraftToPayload(draft: ActiveBusinessProfileDraft): BusinessPayload {
+  return {
+    name: draft.name.trim(),
+    industry: draft.industry.trim() || null,
+    location: draft.location.trim() || null,
+    website_url: draft.website_url.trim() || null,
+    phone: draft.phone.trim() || null,
+    email: draft.email.trim() || null,
+  };
+}
+
+function formatActiveBusinessValue(value: string | null | undefined, fallback = 'Not set') {
+  return value?.trim() || fallback;
+}
+
+function createToastId() {
+  return globalThis.crypto?.randomUUID?.() ?? `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function buildActiveBusinessGenerationProfile(
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
+  fallbackProfile: BusinessProfile,
+): BusinessProfile | null {
+  if (!activeBusiness) return null;
+
+  const services = context?.services.filter((service) => service.trim()) ?? [];
+  const serviceAreas = context?.service_area
+    ? context.service_area
+        .split(',')
+        .map((area) => area.trim())
+        .filter(Boolean)
+    : [];
+
+  return {
+    business_name: activeBusiness.name,
+    industry: activeBusiness.industry?.trim() || fallbackProfile.industry,
+    service_area_cities:
+      serviceAreas.length > 0
+        ? serviceAreas
+        : activeBusiness.location?.trim()
+          ? [activeBusiness.location.trim()]
+          : fallbackProfile.service_area_cities,
+    services_offered: services.length > 0 ? services : fallbackProfile.services_offered,
+    website_url: activeBusiness.website_url?.trim() || fallbackProfile.website_url,
+    phone_number: activeBusiness.phone?.trim() || fallbackProfile.phone_number,
+    email: activeBusiness.email?.trim() || fallbackProfile.email,
+    brand_tone: context?.brand_voice?.trim() || fallbackProfile.brand_tone,
+    target_customer: context?.target_customers?.trim() || fallbackProfile.target_customer,
+    primary_cta: fallbackProfile.primary_cta || 'Request a free estimate',
+    platforms_used: fallbackProfile.platforms_used,
+    visibility_channels: fallbackProfile.visibility_channels,
+  };
+}
+
 function visibilityToolTypeForPost(toolId: VisibilityToolId): SavedGeneratedPostFilter | null {
   if (toolId === 'local-reach-post') return 'reach';
   if (toolId === 'review-request') return 'review';
@@ -1923,6 +2022,23 @@ function statusClassName(status: string) {
 
 function getCampaignItemBusiness(item: CampaignContentQueueItem) {
   return item.business ?? readNoteValue(item.notes, 'Business') ?? item.campaign_id;
+}
+
+function getCampaignItemBusinessId(item: CampaignContentQueueItem) {
+  return readNoteValue(item.notes, 'Business ID');
+}
+
+function normalizeBusinessScopeValue(value: string | null | undefined) {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function campaignItemBelongsToActiveBusiness(item: CampaignContentQueueItem, activeBusiness: Business | null) {
+  if (!activeBusiness) return false;
+
+  const itemBusinessId = getCampaignItemBusinessId(item);
+  if (itemBusinessId) return itemBusinessId === activeBusiness.id;
+
+  return normalizeBusinessScopeValue(getCampaignItemBusiness(item)) === normalizeBusinessScopeValue(activeBusiness.name);
 }
 
 function readNoteValue(notes: string, key: string) {
@@ -2565,16 +2681,20 @@ function App() {
   const [loadingWeeklyQueue, setLoadingWeeklyQueue] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<AppToast[]>([]);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [activeSection, setActiveSection] = useState<AppSection>('calendar');
   const [theme, setTheme] = useState<AppTheme>(() => loadStoredTheme());
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
-  const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activeBusinessId, setActiveBusinessId] = useState(() => loadStoredActiveBusinessId());
   const [loadingBusinesses, setLoadingBusinesses] = useState(true);
   const [businessCreateDraft, setBusinessCreateDraft] = useState<BusinessCreateDraft>(defaultBusinessCreateDraft);
   const [creatingBusiness, setCreatingBusiness] = useState(false);
+  const [activeBusinessProfileDraft, setActiveBusinessProfileDraft] =
+    useState<ActiveBusinessProfileDraft>(emptyActiveBusinessProfileDraft);
+  const [savingActiveBusinessProfile, setSavingActiveBusinessProfile] = useState(false);
+  const [activeBusinessProfileError, setActiveBusinessProfileError] = useState<string | null>(null);
   const [activeBusinessContext, setActiveBusinessContext] = useState<BusinessContext | null>(null);
   const [businessContextDraft, setBusinessContextDraft] = useState<BusinessContextDraft>(emptyBusinessContextDraft);
   const [loadingBusinessContext, setLoadingBusinessContext] = useState(false);
@@ -2625,6 +2745,62 @@ function App() {
   );
   const calendarDragCandidateRef = useRef<CalendarDragCandidate | null>(null);
   const suppressContentSlotClickRef = useRef(false);
+  const businessContextLoadRequestRef = useRef(0);
+
+  const activeBusiness = useMemo(
+    () => businesses.find((business) => business.id === activeBusinessId) ?? null,
+    [activeBusinessId, businesses],
+  );
+  const activeBusinessGenerationProfile = useMemo(
+    () => buildActiveBusinessGenerationProfile(activeBusiness, activeBusinessContext, businessProfile),
+    [activeBusiness, activeBusinessContext, businessProfile],
+  );
+
+  const dismissToast = useCallback((toastId: string) => {
+    setToasts((current) =>
+      current.map((toast) => (toast.id === toastId ? { ...toast, exiting: true } : toast)),
+    );
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== toastId));
+    }, toastExitAnimationMs);
+  }, []);
+
+  const pushToast = useCallback(
+    ({
+      durationMs = defaultToastDurationMs,
+      message,
+      title,
+      type,
+    }: {
+      durationMs?: number;
+      message: string;
+      title?: string;
+      type: ToastType;
+    }) => {
+      const toast: AppToast = {
+        id: createToastId(),
+        durationMs,
+        message,
+        title,
+        type,
+      };
+      setToasts((current) => [...current, toast].slice(-5));
+      return toast.id;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!error) return;
+    pushToast({ message: error, title: 'Error', type: 'error' });
+    setError(null);
+  }, [error, pushToast]);
+
+  useEffect(() => {
+    if (!warning) return;
+    pushToast({ message: warning, title: 'Notice', type: 'warning' });
+    setWarning(null);
+  }, [pushToast, warning]);
 
   const loadJobs = useCallback(async () => {
     setLoadingJobs(true);
@@ -2739,6 +2915,9 @@ function App() {
   }, []);
 
   const loadActiveBusinessContext = useCallback(async (businessId: string) => {
+    const requestId = businessContextLoadRequestRef.current + 1;
+    businessContextLoadRequestRef.current = requestId;
+
     if (!businessId) {
       setActiveBusinessContext(null);
       setBusinessContextDraft({ ...emptyBusinessContextDraft });
@@ -2748,11 +2927,15 @@ function App() {
 
     setLoadingBusinessContext(true);
     setBusinessContextError(null);
+    setActiveBusinessContext(null);
+    setBusinessContextDraft({ ...emptyBusinessContextDraft });
     try {
       const context = await getBusinessContext(businessId);
+      if (businessContextLoadRequestRef.current !== requestId) return;
       setActiveBusinessContext(context);
       setBusinessContextDraft(businessContextToDraft(context));
     } catch (err) {
+      if (businessContextLoadRequestRef.current !== requestId) return;
       if (err instanceof ApiError && err.status === 404) {
         setActiveBusinessContext(null);
         setBusinessContextDraft({ ...emptyBusinessContextDraft });
@@ -2762,7 +2945,9 @@ function App() {
         setBusinessContextError(err instanceof Error ? err.message : 'Unable to load business context.');
       }
     } finally {
-      setLoadingBusinessContext(false);
+      if (businessContextLoadRequestRef.current === requestId) {
+        setLoadingBusinessContext(false);
+      }
     }
   }, []);
 
@@ -2781,10 +2966,19 @@ function App() {
   }, [activeBusinessId, businesses]);
 
   useEffect(() => {
+    setActiveBusinessProfileDraft(activeBusinessToProfileDraft(activeBusiness));
+    setActiveBusinessProfileError(null);
+  }, [activeBusiness]);
+
+  useEffect(() => {
     storeActiveBusinessId(activeBusinessId);
     void loadSavedGeneratedPosts(activeBusinessId);
     void loadActiveBusinessContext(activeBusinessId);
-  }, [activeBusinessId, loadActiveBusinessContext, loadSavedGeneratedPosts]);
+    void loadWeeklyQueue(calendarWeekStartDate);
+    setSelectedContentSlotId(null);
+    setPendingDeleteContentSlotId(null);
+    setPhotoPickerContentSlotId(null);
+  }, [activeBusinessId, calendarWeekStartDate, loadActiveBusinessContext, loadSavedGeneratedPosts, loadWeeklyQueue]);
 
   useEffect(() => {
     setVisibilityToolFormData((current) => ({
@@ -2895,12 +3089,12 @@ function App() {
   }, [campaignQueue]);
 
   const weeklyQueueItems = useMemo(() => {
-    return [...weeklyQueue].sort((a, b) => {
+    return weeklyQueue.filter((item) => campaignItemBelongsToActiveBusiness(item, activeBusiness)).sort((a, b) => {
       const scheduledCompare = getContentItemScheduledAt(a).localeCompare(getContentItemScheduledAt(b));
       if (scheduledCompare !== 0) return scheduledCompare;
       return campaignPlatformOrder[a.platform] - campaignPlatformOrder[b.platform];
     });
-  }, [weeklyQueue]);
+  }, [activeBusiness, weeklyQueue]);
 
   const activeWeeklyQueueItems = useMemo(() => {
     return weeklyQueueItems.filter((item) => item.status !== 'Posted' && item.status !== 'Skipped');
@@ -3199,12 +3393,46 @@ function App() {
       setBusinesses((current) => [createdBusiness, ...current.filter((business) => business.id !== createdBusiness.id)]);
       setActiveBusinessId(createdBusiness.id);
       setBusinessCreateDraft(defaultBusinessCreateDraft);
-      setWarning(`Active business set to ${createdBusiness.name}.`);
+      pushToast({ message: `Active business set to ${createdBusiness.name}.`, title: 'Business created', type: 'success' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create business.');
     } finally {
       setCreatingBusiness(false);
     }
+  }
+
+  async function handleSaveActiveBusinessProfile() {
+    if (!activeBusinessId || !activeBusiness) {
+      setActiveBusinessProfileError('Select or create an active business before saving business details.');
+      return;
+    }
+
+    const payload = activeBusinessProfileDraftToPayload(activeBusinessProfileDraft);
+    if (!payload.name) {
+      setActiveBusinessProfileError('Business name is required.');
+      return;
+    }
+
+    setSavingActiveBusinessProfile(true);
+    setActiveBusinessProfileError(null);
+    try {
+      const updatedBusiness = await updateBusiness(activeBusinessId, payload);
+      setBusinesses((current) =>
+        current.map((business) => (business.id === updatedBusiness.id ? updatedBusiness : business)),
+      );
+      pushToast({ message: `Business profile saved for ${updatedBusiness.name}.`, title: 'Business saved', type: 'success' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to save active business profile.';
+      setActiveBusinessProfileError(message);
+      pushToast({ message, title: 'Business save failed', type: 'error' });
+    } finally {
+      setSavingActiveBusinessProfile(false);
+    }
+  }
+
+  function handleCancelActiveBusinessProfileEdits() {
+    setActiveBusinessProfileDraft(activeBusinessToProfileDraft(activeBusiness));
+    setActiveBusinessProfileError(null);
   }
 
   async function handleSaveBusinessContext() {
@@ -3222,9 +3450,11 @@ function App() {
       );
       setActiveBusinessContext(savedContext);
       setBusinessContextDraft(businessContextToDraft(savedContext));
-      setWarning(`Business context saved for ${activeBusiness?.name ?? 'active business'}.`);
+      pushToast({ message: `Business context saved for ${activeBusiness?.name ?? 'active business'}.`, title: 'Context saved', type: 'success' });
     } catch (err) {
-      setBusinessContextError(err instanceof Error ? err.message : 'Unable to save business context.');
+      const message = err instanceof Error ? err.message : 'Unable to save business context.';
+      setBusinessContextError(message);
+      pushToast({ message, title: 'Context save failed', type: 'error' });
     } finally {
       setSavingBusinessContext(false);
     }
@@ -3276,29 +3506,37 @@ function App() {
     try {
       const savedPost = await createGeneratedPost(activeBusinessId, payload);
       setSavedGeneratedPosts((current) => [savedPost, ...current.filter((post) => post.id !== savedPost.id)]);
-      setWarning(`Saved ${generatedPostToolLabel(savedPost.tool_type)} post to ${activeBusiness?.name ?? 'active business'}.`);
+      pushToast({
+        message: `Saved ${generatedPostToolLabel(savedPost.tool_type)} post to ${activeBusiness?.name ?? 'active business'}.`,
+        title: 'Post saved',
+        type: 'success',
+      });
     } catch (err) {
-      setVisibilityToolError(err instanceof Error ? `Unable to save generated post. ${err.message}` : 'Unable to save generated post.');
+      const message = err instanceof Error ? `Unable to save generated post. ${err.message}` : 'Unable to save generated post.';
+      setVisibilityToolError(message);
+      pushToast({ message, title: 'Post save failed', type: 'error' });
     } finally {
       setVisibilityToolSaving(false);
     }
   }
 
   function openWeeklyScheduleModal() {
-    const profilePlatforms = weeklyPlatformsFromBusinessProfile(businessProfile);
+    const scheduleProfile = activeBusinessGenerationProfile ?? businessProfile;
+    const profilePlatforms = weeklyPlatformsFromBusinessProfile(scheduleProfile);
     setWeeklyScheduleSettings((current) => ({
       ...current,
       platforms: profilePlatforms.length > 0 ? profilePlatforms : current.platforms,
       campaignTheme:
         current.campaignTheme === defaultWeeklyCampaignTheme || !current.campaignTheme.trim()
-          ? weeklyCampaignThemeFromBusinessProfile(businessProfile)
+          ? weeklyCampaignThemeFromBusinessProfile(scheduleProfile)
           : current.campaignTheme,
     }));
     setShowWeeklyScheduleModal(true);
   }
 
   function openManualPostModal() {
-    const profilePlatforms = weeklyPlatformsFromBusinessProfile(businessProfile);
+    const scheduleProfile = activeBusinessGenerationProfile ?? businessProfile;
+    const profilePlatforms = weeklyPlatformsFromBusinessProfile(scheduleProfile);
     setManualPostSettings((current) => ({
       ...current,
       campaignId: selectedCampaignId,
@@ -3307,29 +3545,6 @@ function App() {
       contentType: current.contentType || weeklyScheduleContentTypeOptions[0] || 'General',
     }));
     setShowManualPostModal(true);
-  }
-
-  function handleSaveBusinessProfile() {
-    const nextProfile = normalizeBusinessProfile(businessProfileDraft);
-    setBusinessProfile(nextProfile);
-    setBusinessProfileDraft(nextProfile);
-    storeBusinessProfile(nextProfile);
-    setWarning('Business profile saved. Future generated posts will use this profile.');
-    setError(null);
-  }
-
-  function handleCancelBusinessProfileEdits() {
-    setBusinessProfileDraft(businessProfile);
-    setError(null);
-  }
-
-  function handleResetBusinessProfile() {
-    const nextProfile = normalizeBusinessProfile(defaultBusinessProfile);
-    setBusinessProfile(nextProfile);
-    setBusinessProfileDraft(nextProfile);
-    storeBusinessProfile(nextProfile);
-    setWarning('Business profile reset to the seeded Marom/Gomez Painting defaults.');
-    setError(null);
   }
 
   async function handlePreview(job: CompletedJob) {
@@ -3411,6 +3626,10 @@ function App() {
   }
 
   async function handleGenerateWeeklyPosts(settings: WeeklyScheduleSettings) {
+    if (!activeBusinessId || !activeBusinessGenerationProfile) {
+      setError('Select or create an active business before generating calendar posts.');
+      return;
+    }
     if (settings.platforms.length === 0) {
       setError('Choose at least one platform for the weekly schedule.');
       return;
@@ -3431,7 +3650,8 @@ function App() {
     const campaignTheme = settings.campaignTheme.trim() || defaultWeeklyCampaignTheme;
     try {
       const result = await generateWeeklySocialPosts({
-        campaign_id: selectedCampaignId || null,
+        campaign_id: null,
+        business_id: activeBusinessId,
         platforms: settings.platforms,
         posts_per_platform: settings.contentDays,
         content_days: settings.contentDays,
@@ -3439,18 +3659,20 @@ function App() {
         content_types: settings.contentTypes,
         campaign_theme: campaignTheme,
         separate_meta_platforms: true,
-        business_profile: businessProfile,
+        business_profile: activeBusinessGenerationProfile,
       });
       setCalendarWeekStartDate(settings.weekStartDate);
       await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue(), loadPhotoAssets()]);
       setShowWeeklyScheduleModal(false);
-      setWarning(
-        result.existing
+      pushToast({
+        message: result.existing
           ? 'This weekly schedule already has all selected slots. Showing the existing queue.'
           : hadWeeklyPosts
             ? 'Generated missing scheduled posts for this week.'
             : 'Generated scheduled posts for this week.',
-      );
+        title: result.existing ? 'Schedule already complete' : 'Weekly plan generated',
+        type: result.existing ? 'info' : 'success',
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate weekly posts.');
     } finally {
@@ -3459,6 +3681,10 @@ function App() {
   }
 
   async function handleGenerateManualPost(settings: ManualPostSettings) {
+    if (!activeBusinessId || !activeBusinessGenerationProfile) {
+      setError('Select or create an active business before generating calendar posts.');
+      return;
+    }
     if (!settings.scheduledDate) {
       setError('Choose a date for the post.');
       return;
@@ -3494,10 +3720,11 @@ function App() {
       const results = await Promise.all(
         requestPlatforms.map((platform) =>
           generateManualSocialPost({
-            campaign_id: settings.campaignId || null,
+            campaign_id: null,
+            business_id: activeBusinessId,
             platform,
             post_type: postType,
-            business_profile: businessProfile,
+            business_profile: activeBusinessGenerationProfile,
           }),
         ),
       );
@@ -3508,7 +3735,11 @@ function App() {
       setCalendarWeekStartDate(targetWeekStart);
       await Promise.all([loadWeeklyQueue(targetWeekStart), loadCampaignQueue(), loadPhotoAssets()]);
       setShowManualPostModal(false);
-      setWarning(`Generated ${generatedItems.length} post${generatedItems.length === 1 ? '' : 's'} for ${settings.scheduledDate}.`);
+      pushToast({
+        message: `Generated ${generatedItems.length} post${generatedItems.length === 1 ? '' : 's'} for ${settings.scheduledDate}.`,
+        title: 'Post generated',
+        type: 'success',
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate a post.');
     } finally {
@@ -3670,13 +3901,18 @@ function App() {
     try {
       // TODO: Replace this additive generation call with a slot-aware regenerate endpoint that updates one PlatformPost.
       const result = await generateManualSocialPost({
-        campaign_id: post.item.campaign_id === 'BUSINESS-PROFILE' ? null : post.item.campaign_id,
+        campaign_id: post.item.campaign_id.startsWith('BUSINESS-PROFILE') ? null : post.item.campaign_id,
+        business_id: activeBusinessId || null,
         platform: post.sourcePlatform,
         post_type: getContentItemType(post.item),
-        business_profile: businessProfile,
+        business_profile: activeBusinessGenerationProfile ?? businessProfile,
       });
       await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
-      setWarning(`Generated ${result.queue_items.length} new draft candidate. Review it before posting.`);
+      pushToast({
+        message: `Generated ${result.queue_items.length} new draft candidate. Review it before posting.`,
+        title: 'Draft generated',
+        type: 'success',
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to regenerate weekly post.');
     } finally {
@@ -4398,7 +4634,6 @@ function App() {
   const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId) ?? getVisibilityToolById('local-reach-post');
   const selectedVisibilityPhotoAsset =
     photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
-  const activeBusiness = businesses.find((business) => business.id === activeBusinessId) ?? null;
   const filteredSavedGeneratedPosts =
     savedGeneratedPostFilter === 'all'
       ? savedGeneratedPosts
@@ -4497,31 +4732,7 @@ function App() {
         </div>
       </header>
 
-      {error ? (
-        <section className="alert" role="alert">
-          <span>{error}</span>
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </section>
-      ) : null}
-
-      {warning ? (
-        <section className="alert warning" role="status">
-          <span>{warning}</span>
-          <button onClick={() => setWarning(null)}>Dismiss</button>
-        </section>
-      ) : null}
-
-      <BusinessSelector
-        activeBusiness={activeBusiness}
-        activeBusinessId={activeBusinessId}
-        businesses={businesses}
-        creating={creatingBusiness}
-        draft={businessCreateDraft}
-        loading={loadingBusinesses}
-        onCreate={() => void handleCreateBusiness()}
-        onDraftChange={setBusinessCreateDraft}
-        onSelect={setActiveBusinessId}
-      />
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
 
       {activeSection === 'visibility-tools' ? (
         <section className="panel visibility-tools-panel">
@@ -4820,12 +5031,15 @@ function App() {
       {activeSection === 'business-profile' ? (
         <>
           <BusinessProfileSection
-            profile={businessProfile}
-            draft={businessProfileDraft}
-            onCancel={handleCancelBusinessProfileEdits}
-            onChange={setBusinessProfileDraft}
-            onReset={handleResetBusinessProfile}
-            onSave={handleSaveBusinessProfile}
+            activeBusiness={activeBusiness}
+            context={activeBusinessContext}
+            draft={activeBusinessProfileDraft}
+            error={activeBusinessProfileError}
+            loadingContext={loadingBusinessContext}
+            saving={savingActiveBusinessProfile}
+            onCancel={handleCancelActiveBusinessProfileEdits}
+            onChange={setActiveBusinessProfileDraft}
+            onSave={() => void handleSaveActiveBusinessProfile()}
           />
           <BusinessContextSection
             activeBusiness={activeBusiness}
@@ -4847,12 +5061,22 @@ function App() {
           businessName={activeBusiness?.name ?? businessProfile.business_name}
           serviceOptions={businessProfile.services_offered}
           onAssetsChange={setPhotoAssets}
+          onNotify={pushToast}
         />
       ) : null}
 
       {activeSection === 'settings' ? (
         <SettingsSection
+          activeBusiness={activeBusiness}
+          activeBusinessId={activeBusinessId}
+          businesses={businesses}
+          businessDraft={businessCreateDraft}
+          creatingBusiness={creatingBusiness}
+          loadingBusinesses={loadingBusinesses}
           theme={theme}
+          onBusinessCreate={() => void handleCreateBusiness()}
+          onBusinessDraftChange={setBusinessCreateDraft}
+          onBusinessSelect={setActiveBusinessId}
           onThemeChange={(nextTheme) => setTheme(nextTheme)}
         />
       ) : null}
@@ -5465,183 +5689,162 @@ function App() {
 }
 
 function BusinessProfileSection({
-  profile,
+  activeBusiness,
+  context,
   draft,
+  error,
+  loadingContext,
+  saving,
   onCancel,
   onChange,
-  onReset,
   onSave,
 }: {
-  profile: BusinessProfile;
-  draft: BusinessProfile;
+  activeBusiness: Business | null;
+  context: BusinessContext | null;
+  draft: ActiveBusinessProfileDraft;
+  error: string | null;
+  loadingContext: boolean;
+  saving: boolean;
   onCancel: () => void;
-  onChange: (profile: BusinessProfile) => void;
-  onReset: () => void;
+  onChange: (draft: ActiveBusinessProfileDraft) => void;
   onSave: () => void;
 }) {
-  const updateField = <Key extends keyof BusinessProfile>(field: Key, value: BusinessProfile[Key]) => {
+  const updateField = <Key extends keyof ActiveBusinessProfileDraft>(field: Key, value: ActiveBusinessProfileDraft[Key]) => {
     onChange({ ...draft, [field]: value });
   };
-  const togglePlatform = (platform: BusinessProfile['platforms_used'][number]) => {
-    const selected = draft.platforms_used.includes(platform);
-    updateField(
-      'platforms_used',
-      selected ? draft.platforms_used.filter((item) => item !== platform) : [...draft.platforms_used, platform],
-    );
-  };
-  const toggleVisibilityChannel = (channel: VisibilityChannel) => {
-    const selected = (draft.visibility_channels ?? defaultVisibilityChannels).includes(channel);
-    updateField(
-      'visibility_channels',
-      selected
-        ? (draft.visibility_channels ?? defaultVisibilityChannels).filter((item) => item !== channel)
-        : [...(draft.visibility_channels ?? defaultVisibilityChannels), channel],
-    );
-  };
+  const disabled = !activeBusiness || saving;
 
   return (
     <section className="panel business-profile-panel">
       <div className="panel-heading weekly-heading">
         <div>
           <h2>Business Profile</h2>
-          <p>Saved business details used by weekly and single-post generation.</p>
+          <p>
+            {activeBusiness
+              ? `Active profile for ${activeBusiness.name}.`
+              : 'Select or create an active business before editing profile details.'}
+          </p>
         </div>
       </div>
 
-      <div className="business-profile-layout">
-        <aside className="business-profile-summary" aria-label="Current saved profile">
-          <span>Current Saved Profile</span>
-          <h3>{profile.business_name}</h3>
-          <p>{profile.industry}</p>
-          <div className="business-profile-pill-list">
-            <strong>Service Area</strong>
-            {profile.service_area_cities.map((city) => (
-              <span key={city}>{city}</span>
-            ))}
-          </div>
-          <div className="business-profile-pill-list">
-            <strong>Services</strong>
-            {profile.services_offered.map((service) => (
-              <span key={service}>{service}</span>
-            ))}
-          </div>
-          <div className="business-profile-summary-lines">
-            <span>CTA: {profile.primary_cta}</span>
-            <span>Website: {profile.website_url}</span>
-            {profile.phone_number ? <span>Phone: {profile.phone_number}</span> : null}
-            {profile.email ? <span>Email: {profile.email}</span> : null}
-            <span>Tone: {profile.brand_tone}</span>
-            <span>Target: {profile.target_customer}</span>
-            <span>Visibility: {visibilityChannelsFromProfile(profile).join(', ')}</span>
-          </div>
-        </aside>
+      {error ? (
+        <div className="photo-library-alert" role="alert">
+          {error}
+        </div>
+      ) : null}
 
-        <details className="business-profile-edit-panel">
-          <summary>Edit</summary>
-          <form
-            className="business-profile-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onSave();
-            }}
-          >
-            <label className="form-field">
-              <span>Business name</span>
-              <input
-                value={draft.business_name}
-                onChange={(event) => updateField('business_name', event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>Industry / category</span>
-              <input value={draft.industry} onChange={(event) => updateField('industry', event.target.value)} />
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Service area cities</span>
-              <textarea
-                value={formatProfileList(draft.service_area_cities)}
-                onChange={(event) => updateField('service_area_cities', parseEditableProfileList(event.target.value))}
-              />
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Services offered</span>
-              <textarea
-                value={formatProfileList(draft.services_offered)}
-                onChange={(event) => updateField('services_offered', parseEditableProfileList(event.target.value))}
-              />
-            </label>
-            <label className="form-field">
-              <span>Website URL</span>
-              <input value={draft.website_url} onChange={(event) => updateField('website_url', event.target.value)} />
-            </label>
-            <label className="form-field">
-              <span>Phone number</span>
-              <input value={draft.phone_number} onChange={(event) => updateField('phone_number', event.target.value)} />
-            </label>
-            <label className="form-field">
-              <span>Email</span>
-              <input value={draft.email} onChange={(event) => updateField('email', event.target.value)} />
-            </label>
-            <label className="form-field">
-              <span>Primary CTA</span>
-              <input value={draft.primary_cta} onChange={(event) => updateField('primary_cta', event.target.value)} />
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Brand tone</span>
-              <textarea value={draft.brand_tone} onChange={(event) => updateField('brand_tone', event.target.value)} />
-            </label>
-            <label className="form-field form-field-wide">
-              <span>Target customer</span>
-              <textarea
-                value={draft.target_customer}
-                onChange={(event) => updateField('target_customer', event.target.value)}
-              />
-            </label>
-            <fieldset className="option-group">
-              <legend>Platforms used</legend>
-              <div className="checkbox-grid">
-                {businessProfilePlatforms.map((platform) => (
-                  <label className="checkbox-card" key={platform}>
-                    <input
-                      checked={draft.platforms_used.includes(platform)}
-                      type="checkbox"
-                      onChange={() => togglePlatform(platform)}
-                    />
-                    <span>{platform}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset className="option-group">
-              <legend>Visibility channels</legend>
-              <div className="checkbox-grid">
-                {visibilityChannelOptions.map((channel) => (
-                  <label className="checkbox-card" key={channel}>
-                    <input
-                      checked={(draft.visibility_channels ?? defaultVisibilityChannels).includes(channel)}
-                      type="checkbox"
-                      onChange={() => toggleVisibilityChannel(channel)}
-                    />
-                    <span>{channel}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          </form>
+      {!activeBusiness ? (
+        <div className="photo-library-empty">
+          <strong>No active business selected.</strong>
+          <span>Create or select a business above to view and edit its profile.</span>
+        </div>
+      ) : (
+        <div className="business-profile-layout">
+          <aside className="business-profile-summary" aria-label="Active business profile">
+            <span>Active Business Profile</span>
+            <h3>{activeBusiness.name}</h3>
+            <p>{formatActiveBusinessValue(activeBusiness.industry)}</p>
+            <div className="business-profile-summary-lines">
+              <span>Location: {formatActiveBusinessValue(activeBusiness.location)}</span>
+              <span>Website: {formatActiveBusinessValue(activeBusiness.website_url)}</span>
+              <span>Phone: {formatActiveBusinessValue(activeBusiness.phone)}</span>
+              <span>Email: {formatActiveBusinessValue(activeBusiness.email)}</span>
+            </div>
+            <div className="business-profile-pill-list">
+              <strong>Services</strong>
+              {context?.services.length ? (
+                context.services.map((service) => <span key={service}>{service}</span>)
+              ) : (
+                <span>Not set</span>
+              )}
+            </div>
+            <div className="business-profile-pill-list">
+              <strong>Differentiators</strong>
+              {context?.differentiators.length ? (
+                context.differentiators.map((item) => <span key={item}>{item}</span>)
+              ) : (
+                <span>Not set</span>
+              )}
+            </div>
+            <div className="business-profile-summary-lines">
+              <span>Service area: {formatActiveBusinessValue(context?.service_area)}</span>
+              <span>Target: {formatActiveBusinessValue(context?.target_customers)}</span>
+              <span>Voice: {formatActiveBusinessValue(context?.brand_voice)}</span>
+              <span>Notes: {formatActiveBusinessValue(context?.notes)}</span>
+              {loadingContext ? <span>Context: Loading</span> : null}
+            </div>
+          </aside>
 
-          <div className="business-profile-actions">
-            <button type="button" onClick={onCancel}>
-              Cancel
-            </button>
-            <button className="danger-button" type="button" onClick={onReset}>
-              Reset
-            </button>
-            <button className="secondary-button" type="button" onClick={onSave}>
-              Save Profile
-            </button>
-          </div>
-        </details>
-      </div>
+          <details className="business-profile-edit-panel">
+            <summary>Edit Business Details</summary>
+            <form
+              className="business-profile-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!disabled) onSave();
+              }}
+            >
+              <label className="form-field">
+                <span>Business name</span>
+                <input
+                  disabled={disabled}
+                  value={draft.name}
+                  onChange={(event) => updateField('name', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Industry / category</span>
+                <input
+                  disabled={disabled}
+                  value={draft.industry}
+                  onChange={(event) => updateField('industry', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Location</span>
+                <input
+                  disabled={disabled}
+                  value={draft.location}
+                  onChange={(event) => updateField('location', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Website URL</span>
+                <input
+                  disabled={disabled}
+                  value={draft.website_url}
+                  onChange={(event) => updateField('website_url', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Phone</span>
+                <input
+                  disabled={disabled}
+                  value={draft.phone}
+                  onChange={(event) => updateField('phone', event.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>Email</span>
+                <input
+                  disabled={disabled}
+                  value={draft.email}
+                  onChange={(event) => updateField('email', event.target.value)}
+                />
+              </label>
+            </form>
+
+            <div className="business-profile-actions">
+              <button disabled={saving} type="button" onClick={onCancel}>
+                Cancel
+              </button>
+              <button className="secondary-button" disabled={disabled} type="button" onClick={onSave}>
+                {saving ? 'Saving...' : 'Save Business'}
+              </button>
+            </div>
+          </details>
+        </div>
+      )}
     </section>
   );
 }
@@ -5779,10 +5982,28 @@ function BusinessContextSection({
 }
 
 function SettingsSection({
+  activeBusiness,
+  activeBusinessId,
+  businesses,
+  businessDraft,
+  creatingBusiness,
+  loadingBusinesses,
   theme,
+  onBusinessCreate,
+  onBusinessDraftChange,
+  onBusinessSelect,
   onThemeChange,
 }: {
+  activeBusiness: Business | null;
+  activeBusinessId: string;
+  businesses: Business[];
+  businessDraft: BusinessCreateDraft;
+  creatingBusiness: boolean;
+  loadingBusinesses: boolean;
   theme: AppTheme;
+  onBusinessCreate: () => void;
+  onBusinessDraftChange: (draft: BusinessCreateDraft) => void;
+  onBusinessSelect: (businessId: string) => void;
   onThemeChange: (theme: AppTheme) => void;
 }) {
   const darkModeEnabled = theme === 'dark';
@@ -5796,6 +6017,23 @@ function SettingsSection({
         </div>
       </div>
       <div className="settings-list">
+        <div className="settings-row settings-business-row">
+          <div>
+            <strong>Active Business</strong>
+            <span>Switch or create the business used by calendar, photos, context, and saved posts.</span>
+          </div>
+          <BusinessSelector
+            activeBusiness={activeBusiness}
+            activeBusinessId={activeBusinessId}
+            businesses={businesses}
+            creating={creatingBusiness}
+            draft={businessDraft}
+            loading={loadingBusinesses}
+            onCreate={onBusinessCreate}
+            onDraftChange={onBusinessDraftChange}
+            onSelect={onBusinessSelect}
+          />
+        </div>
         <label className="settings-row">
           <div>
             <strong>Dark Mode</strong>
@@ -5816,11 +6054,13 @@ function SettingsSection({
 function PhotoLibrarySection({
   businessId,
   businessName,
+  onNotify,
   onAssetsChange,
   serviceOptions,
 }: {
   businessId: string;
   businessName: string;
+  onNotify?: (toast: { durationMs?: number; message: string; title?: string; type: ToastType }) => string;
   onAssetsChange?: (assets: PhotoAsset[]) => void;
   serviceOptions: string[];
 }) {
@@ -5988,10 +6228,14 @@ function PhotoLibrarySection({
         onAssetsChange?.(nextAssets);
         return nextAssets;
       });
-      setPhotoAssetNotice(existingAsset ? 'Photo asset updated.' : 'Photo asset added to the library.');
+      const message = existingAsset ? 'Photo asset updated.' : 'Photo asset added to the library.';
+      setPhotoAssetNotice(message);
+      onNotify?.({ message, title: existingAsset ? 'Photo updated' : 'Photo added', type: 'success' });
       closePhotoModal();
     } catch (err) {
-      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to save this photo asset.');
+      const message = err instanceof Error ? err.message : 'Unable to save this photo asset.';
+      setPhotoAssetError(message);
+      onNotify?.({ message, title: 'Photo save failed', type: 'error' });
     } finally {
       photoAssetSavingRef.current = false;
       setPhotoAssetBusyAction(null);
@@ -6015,9 +6259,12 @@ function PhotoLibrarySection({
         return nextAssets;
       });
       setPhotoAssetNotice('Photo asset deleted.');
+      onNotify?.({ message: 'Photo asset deleted.', title: 'Photo deleted', type: 'success' });
       setPendingDeletePhotoAssetId(null);
     } catch (err) {
-      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to delete this photo asset.');
+      const message = err instanceof Error ? err.message : 'Unable to delete this photo asset.';
+      setPhotoAssetError(message);
+      onNotify?.({ message, title: 'Photo delete failed', type: 'error' });
     } finally {
       setPhotoAssetBusyAction(null);
     }
@@ -6070,13 +6317,16 @@ function PhotoLibrarySection({
       window.localStorage.removeItem(photoLibraryStorageKey);
       setLocalPhotoImportCount(0);
       const skippedCount = storedPayloads.length - importablePayloads.length;
-      setPhotoAssetNotice(
+      const message =
         skippedCount > 0
           ? `Imported ${importedAssets.length} photo assets. Skipped ${skippedCount} assets without image data.`
-          : `Imported ${importedAssets.length} photo assets into backend storage.`,
-      );
+          : `Imported ${importedAssets.length} photo assets into backend storage.`;
+      setPhotoAssetNotice(message);
+      onNotify?.({ message, title: 'Photos imported', type: 'success' });
     } catch (err) {
-      setPhotoAssetError(err instanceof Error ? err.message : 'Unable to import local Photo Library assets.');
+      const message = err instanceof Error ? err.message : 'Unable to import local Photo Library assets.';
+      setPhotoAssetError(message);
+      onNotify?.({ message, title: 'Photo import failed', type: 'error' });
     } finally {
       setPhotoAssetBusyAction(null);
     }
@@ -6602,6 +6852,48 @@ function StandardModal({
   );
 
   return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
+}
+
+function ToastViewport({ toasts, onDismiss }: { toasts: AppToast[]; onDismiss: (toastId: string) => void }) {
+  if (toasts.length === 0) return null;
+
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-label="Notifications">
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+function ToastItem({ toast, onDismiss }: { toast: AppToast; onDismiss: (toastId: string) => void }) {
+  useEffect(() => {
+    if (toast.exiting) return undefined;
+    const timeoutId = window.setTimeout(() => onDismiss(toast.id), toast.durationMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [onDismiss, toast.durationMs, toast.exiting, toast.id]);
+
+  const title = toast.title ?? toast.type.charAt(0).toUpperCase() + toast.type.slice(1);
+
+  return (
+    <section
+      className={`toast toast-${toast.type} ${toast.exiting ? 'toast-exiting' : ''}`}
+      role={toast.type === 'error' ? 'alert' : 'status'}
+      style={{ '--toast-duration': `${toast.durationMs}ms` } as CSSProperties & Record<'--toast-duration', string>}
+    >
+      <div className="toast-accent" aria-hidden="true" />
+      <div className="toast-content">
+        <div className="toast-heading">
+          <strong>{title}</strong>
+          <button aria-label="Dismiss notification" type="button" onClick={() => onDismiss(toast.id)}>
+            <Icon name="x" />
+          </button>
+        </div>
+        <p>{toast.message}</p>
+      </div>
+      <div className="toast-progress" aria-hidden="true" />
+    </section>
+  );
 }
 
 function BusinessSelector({

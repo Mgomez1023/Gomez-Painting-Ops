@@ -127,6 +127,7 @@ class BusinessProfileInput(BaseModel):
 
 class WeeklySocialQueueGenerateRequest(BaseModel):
     campaign_id: str | None = None
+    business_id: str | None = None
     platforms: list[CampaignPlatform] | None = None
     posts_per_platform: int = Field(default=3, ge=1, le=7)
     content_days: int | None = Field(default=None, ge=1, le=7)
@@ -140,6 +141,7 @@ class WeeklySocialQueueGenerateRequest(BaseModel):
 
 class ManualSocialPostGenerateRequest(BaseModel):
     campaign_id: str | None = None
+    business_id: str | None = None
     platform: CampaignPlatform | None = None
     post_type: str = "General"
     business_profile: BusinessProfileInput | None = None

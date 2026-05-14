@@ -460,6 +460,35 @@ def test_generate_weekly_posts_uses_business_profile_when_no_campaign_is_selecte
     assert all("Services Offered: Roof repair, Storm damage inspections" in item.notes for item in result.queue_items)
 
 
+def test_generate_weekly_posts_namespaces_business_profile_by_business_id() -> None:
+    sheets_service = FakeSheetsService(campaigns=[])
+    campaign_agent = FakeCampaignAgent()
+    image_service = FakeCampaignImageService()
+    service = SocialQueueService(sheets_service, campaign_agent, image_service)
+
+    result = service.generate_weekly_posts(
+        WeeklySocialQueueGenerateRequest(
+            business_id="rose-garden-id",
+            posts_per_platform=1,
+            business_profile={
+                "business_name": "Rose's Garden",
+                "industry": "Landscaping",
+                "service_area_cities": ["Berwyn"],
+                "services_offered": ["Garden cleanup"],
+                "website_url": "https://roses.example",
+                "primary_cta": "Request a garden visit",
+                "platforms_used": ["Facebook", "Instagram", "Google Business"],
+            },
+        )
+    )
+
+    assert result.existing is False
+    assert len(result.queue_items) == 2
+    assert all(item.campaign_id == "BUSINESS-PROFILE-rose-garden-id" for item in result.queue_items)
+    assert all(item.business == "Rose's Garden" for item in result.queue_items)
+    assert all("Business ID: rose-garden-id" in item.notes for item in result.queue_items)
+
+
 def test_generate_weekly_posts_avoids_images_already_used_in_same_week() -> None:
     existing_item = _queue_item(
         "WSQ-existing-google-1",
