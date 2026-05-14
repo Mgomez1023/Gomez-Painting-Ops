@@ -4743,7 +4743,7 @@ function App() {
     <div className="app-shell">
       <aside className={`app-sidebar ${mobileNavOpen ? 'app-sidebar-open' : ''}`} aria-label="GomezOps navigation">
         <div className="sidebar-brand">
-          <span>GomezOps</span>
+          <span>{activeBusiness?.name?.trim() || 'No business selected'}</span>
         </div>
         <nav className="sidebar-nav" style={sidebarNavStyle} aria-label="Primary">
           <span className="sidebar-active-indicator" aria-hidden="true" />
