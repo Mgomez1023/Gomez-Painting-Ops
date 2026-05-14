@@ -12,7 +12,6 @@ Backend:
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
@@ -20,6 +19,8 @@ uvicorn app.main:app --reload
 Remove-Item -Recurse -Force .venv
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 '''
 
 Frontend:
@@ -28,6 +29,12 @@ Frontend:
 cd frontend
 npm install
 cp .env.example .env
+npm run dev
+```
+
+```bash
+cd frontend
+npm install
 npm run dev
 ```
 

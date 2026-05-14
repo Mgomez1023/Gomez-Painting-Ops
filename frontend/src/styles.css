@@ -1251,6 +1251,35 @@ th {
   color: var(--color-success-text);
 }
 
+.photo-bulk-input {
+  display: none;
+}
+
+.photo-library-bulk-status {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  display: grid;
+  gap: 5px;
+  padding: 12px 16px;
+}
+
+.photo-library-bulk-status strong {
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.photo-library-bulk-status span {
+  font-size: 12px;
+}
+
+.photo-library-bulk-status ul {
+  color: var(--color-danger-text);
+  font-size: 12px;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .photo-library-summary {
   align-items: center;
   background: var(--color-surface);

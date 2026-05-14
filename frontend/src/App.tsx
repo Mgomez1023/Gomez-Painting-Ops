@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  ChangeEvent as ReactChangeEvent,
   CSSProperties,
   JSX,
   MouseEvent as ReactMouseEvent,
@@ -160,6 +161,14 @@ type PhotoAssetDraft = {
   location: string;
   tagsText: string;
   quality: PhotoAssetQuality;
+};
+
+type BulkPhotoImportStatus = {
+  failed: number;
+  failures: string[];
+  imported: number;
+  skipped: number;
+  total: number;
 };
 
 type StoredPhotoAssetPayload = Partial<PhotoAssetPayload> & {
@@ -1830,6 +1839,14 @@ function formatPhotoAssetDate(value: string) {
     day: 'numeric',
     year: 'numeric',
   }).format(date);
+}
+
+function photoFileBatchKey(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function photoTitleFromFilename(filename: string) {
+  return filename.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim() || filename;
 }
 
 function readFileAsDataUrl(file: File) {
@@ -6185,12 +6202,15 @@ function PhotoLibrarySection({
   const [showPhotoAssetModal, setShowPhotoAssetModal] = useState(false);
   const [editingPhotoAssetId, setEditingPhotoAssetId] = useState<string | null>(null);
   const [pendingDeletePhotoAssetId, setPendingDeletePhotoAssetId] = useState<string | null>(null);
-  const [photoAssetBusyAction, setPhotoAssetBusyAction] = useState<'image' | 'save' | 'import' | 'delete' | null>(null);
+  const [photoAssetBusyAction, setPhotoAssetBusyAction] = useState<'image' | 'save' | 'import' | 'bulk' | 'delete' | null>(null);
   const [photoAssetError, setPhotoAssetError] = useState<string | null>(null);
   const [photoAssetNotice, setPhotoAssetNotice] = useState<string | null>(null);
+  const [bulkImportStatus, setBulkImportStatus] = useState<BulkPhotoImportStatus | null>(null);
   const [loadingPhotoAssets, setLoadingPhotoAssets] = useState(true);
   const [localPhotoImportCount, setLocalPhotoImportCount] = useState(() => loadStoredPhotoAssets().length);
   const photoAssetSavingRef = useRef(false);
+  const bulkPhotoInputRef = useRef<HTMLInputElement | null>(null);
+  const folderPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadBackendPhotoAssets = useCallback(async () => {
     if (!businessId) {
@@ -6218,6 +6238,14 @@ function PhotoLibrarySection({
   useEffect(() => {
     void loadBackendPhotoAssets();
   }, [loadBackendPhotoAssets]);
+
+  useEffect(() => {
+    const folderInput = folderPhotoInputRef.current;
+    if (!folderInput) return;
+
+    folderInput.setAttribute('webkitdirectory', '');
+    folderInput.setAttribute('directory', '');
+  }, []);
 
   const sortedPhotoAssets = useMemo(() => {
     return [...photoAssets].sort((a, b) => {
@@ -6280,8 +6308,14 @@ function PhotoLibrarySection({
     setPhotoDraft((current) => ({ ...current, [field]: value }));
   }
 
-  async function handlePhotoFileSelect(file: File | null) {
+  async function handlePhotoFileSelect(files: File[]) {
+    const [file] = files;
     if (!file) return;
+    if (files.length > 1) {
+      closePhotoModal();
+      await handleBulkPhotoFiles(files);
+      return;
+    }
 
     setPhotoAssetBusyAction('image');
     setPhotoAssetError(null);
@@ -6292,13 +6326,129 @@ function PhotoLibrarySection({
         image_data: imagePayload.image_data,
         image_url: null,
         image_filename: imagePayload.image_filename,
-        title: current.title || file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' '),
+        title: current.title || photoTitleFromFilename(file.name),
       }));
     } catch (err) {
       setPhotoAssetError(err instanceof Error ? err.message : 'Unable to load this image.');
     } finally {
       setPhotoAssetBusyAction(null);
     }
+  }
+
+  async function handleBulkPhotoFiles(files: File[]) {
+    if (!businessId) {
+      const message = 'Select or create an active business before uploading photos.';
+      setPhotoAssetError(message);
+      onNotify?.({ message, title: 'Upload disabled', type: 'warning' });
+      return;
+    }
+
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      const message = 'Choose one or more image files to upload.';
+      setPhotoAssetError(message);
+      onNotify?.({ message, title: 'No images selected', type: 'warning' });
+      return;
+    }
+
+    const existingImageReferences = new Set(
+      photoAssets
+        .map((asset) => normalizeImageReference(getPhotoAssetImageSource(asset)))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const existingFilenames = new Set(
+      photoAssets
+        .map((asset) => asset.image_filename?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value)),
+    );
+    const seenBatchKeys = new Set<string>();
+    const failures: string[] = [];
+    const importedAssets: PhotoAsset[] = [];
+    let skipped = files.length - imageFiles.length;
+
+    setPhotoAssetBusyAction('bulk');
+    setPhotoAssetError(null);
+    setBulkImportStatus({ failed: 0, failures: [], imported: 0, skipped, total: files.length });
+
+    try {
+      for (const file of imageFiles) {
+        const batchKey = photoFileBatchKey(file);
+        const normalizedFilename = file.name.trim().toLowerCase();
+        if (seenBatchKeys.has(batchKey) || existingFilenames.has(normalizedFilename)) {
+          skipped += 1;
+          setBulkImportStatus((current) =>
+            current ? { ...current, skipped } : { failed: failures.length, failures, imported: importedAssets.length, skipped, total: files.length },
+          );
+          continue;
+        }
+        seenBatchKeys.add(batchKey);
+
+        try {
+          const imagePayload = await fileToPhotoAssetImage(file);
+          const imageReference = normalizeImageReference(imagePayload.image_data);
+          if (imageReference && existingImageReferences.has(imageReference)) {
+            skipped += 1;
+            setBulkImportStatus((current) =>
+              current ? { ...current, skipped } : { failed: failures.length, failures, imported: importedAssets.length, skipped, total: files.length },
+            );
+            continue;
+          }
+
+          const savedBusinessAsset = await createBusinessPhotoAsset(
+            businessId,
+            photoAssetDraftToBusinessPhotoAssetPayload({
+              ...createEmptyPhotoAssetDraft(),
+              image_data: imagePayload.image_data,
+              image_filename: imagePayload.image_filename,
+              title: photoTitleFromFilename(file.name),
+            }),
+          );
+          const savedAsset = businessPhotoAssetToPhotoAsset(savedBusinessAsset);
+          importedAssets.push(savedAsset);
+          existingFilenames.add(normalizedFilename);
+          const savedReference = normalizeImageReference(getPhotoAssetImageSource(savedAsset));
+          if (savedReference) existingImageReferences.add(savedReference);
+        } catch (err) {
+          failures.push(`${file.name}: ${err instanceof Error ? err.message : 'Unable to import this photo.'}`);
+        }
+
+        setBulkImportStatus((current) =>
+          current
+            ? { ...current, failed: failures.length, failures: failures.slice(0, 5), imported: importedAssets.length, skipped }
+            : { failed: failures.length, failures: failures.slice(0, 5), imported: importedAssets.length, skipped, total: files.length },
+        );
+      }
+
+      if (importedAssets.length > 0) {
+        setPhotoAssets((currentAssets) => {
+          const nextAssets = [...importedAssets, ...currentAssets];
+          onAssetsChange?.(nextAssets);
+          return nextAssets;
+        });
+      }
+
+      const messageParts = [`Imported ${importedAssets.length} photo${importedAssets.length === 1 ? '' : 's'}`];
+      if (skipped > 0) messageParts.push(`skipped ${skipped}`);
+      if (failures.length > 0) messageParts.push(`failed ${failures.length}`);
+      const message = `${messageParts.join(', ')}.`;
+      setPhotoAssetNotice(message);
+      onNotify?.({
+        message,
+        title: failures.length > 0 ? 'Photo import completed with issues' : 'Photos imported',
+        type: failures.length > 0 ? 'warning' : 'success',
+      });
+      if (failures.length > 0 && importedAssets.length === 0) {
+        setPhotoAssetError(failures.slice(0, 3).join(' '));
+      }
+    } finally {
+      setPhotoAssetBusyAction(null);
+    }
+  }
+
+  function handleBulkPhotoInputChange(event: ReactChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = '';
+    void handleBulkPhotoFiles(files);
   }
 
   async function handleSavePhotoAsset() {
@@ -6460,6 +6610,22 @@ function PhotoLibrarySection({
           </p>
         </div>
         <div className="panel-heading-actions">
+          <input
+            accept="image/*"
+            className="photo-bulk-input"
+            multiple
+            ref={bulkPhotoInputRef}
+            type="file"
+            onChange={handleBulkPhotoInputChange}
+          />
+          <input
+            accept="image/*"
+            className="photo-bulk-input"
+            multiple
+            ref={folderPhotoInputRef}
+            type="file"
+            onChange={handleBulkPhotoInputChange}
+          />
           {localPhotoImportCount > 0 ? (
             <button
               className="secondary-button"
@@ -6470,6 +6636,22 @@ function PhotoLibrarySection({
               {photoAssetBusyAction === 'import' ? 'Importing...' : `Import ${localPhotoImportCount} Local`}
             </button>
           ) : null}
+          <button
+            className="secondary-button"
+            disabled={!businessId || photoAssetBusyAction !== null}
+            type="button"
+            onClick={() => bulkPhotoInputRef.current?.click()}
+          >
+            {photoAssetBusyAction === 'bulk' ? 'Uploading...' : 'Upload photos'}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={!businessId || photoAssetBusyAction !== null}
+            type="button"
+            onClick={() => folderPhotoInputRef.current?.click()}
+          >
+            Import folder
+          </button>
           <button className="secondary-button" disabled={!businessId} type="button" onClick={openAddPhotoModal}>
             Add Photo
           </button>
@@ -6482,6 +6664,25 @@ function PhotoLibrarySection({
         </div>
       ) : null}
       {photoAssetNotice ? <div className="photo-library-notice">{photoAssetNotice}</div> : null}
+      {bulkImportStatus ? (
+        <div className="photo-library-bulk-status" role="status">
+          <strong>
+            Imported {bulkImportStatus.imported} of {bulkImportStatus.total} selected photo
+            {bulkImportStatus.total === 1 ? '' : 's'}.
+          </strong>
+          <span>
+            {bulkImportStatus.skipped > 0 ? `${bulkImportStatus.skipped} skipped. ` : ''}
+            {bulkImportStatus.failed > 0 ? `${bulkImportStatus.failed} failed.` : ''}
+          </span>
+          {bulkImportStatus.failures.length > 0 ? (
+            <ul>
+              {bulkImportStatus.failures.map((failure) => (
+                <li key={failure}>{failure}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {!businessId ? (
         <div className="photo-library-empty">
@@ -6544,7 +6745,7 @@ function PhotoLibrarySection({
           <strong>Upload project photos to give Gomez Ops reusable assets for generated posts.</strong>
           <span>Add finished projects, before/after shots, work-in-progress photos, and team photos with service tags.</span>
           <button className="secondary-button" type="button" onClick={openAddPhotoModal}>
-            Upload Photo
+            Add Photo
           </button>
         </div>
       )}
@@ -6592,7 +6793,7 @@ function PhotoAssetModal({
   serviceOptions: string[];
   onCancel: () => void;
   onChange: <Key extends keyof PhotoAssetDraft>(field: Key, value: PhotoAssetDraft[Key]) => void;
-  onFileSelect: (file: File | null) => Promise<void>;
+  onFileSelect: (files: File[]) => Promise<void>;
   onSave: () => void;
 }) {
   const photoAssetFormId = 'photo-asset-modal-form';
@@ -6656,7 +6857,7 @@ function PhotoAssetForm({
   formId: string;
   serviceOptions: string[];
   onChange: <Key extends keyof PhotoAssetDraft>(field: Key, value: PhotoAssetDraft[Key]) => void;
-  onFileSelect: (file: File | null) => Promise<void>;
+  onFileSelect: (files: File[]) => Promise<void>;
   onSave: () => void;
 }) {
   const imageSource = getPhotoAssetPreviewUrl(draft);
@@ -6678,8 +6879,13 @@ function PhotoAssetForm({
           <span>Image file</span>
           <input
             accept="image/*"
+            multiple
             type="file"
-            onChange={(event) => void onFileSelect(event.currentTarget.files?.[0] ?? null)}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = '';
+              void onFileSelect(files);
+            }}
           />
           <small>
             {busyAction === 'image'
