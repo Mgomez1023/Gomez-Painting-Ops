@@ -19,6 +19,7 @@ VisibilityDestination = Literal[
     "General Social Post",
 ]
 VisibilityGenerationMode = Literal["llm", "fallback"]
+EmojiPreference = Literal["less", "default", "more"]
 
 
 class VisibilityPhotoAssetMetadata(BaseModel):
@@ -85,6 +86,7 @@ class VisibilityGenerationRequest(BaseModel):
     contact: str = ""
     photo_asset: VisibilityPhotoAssetMetadata | None = Field(default=None, alias="photoAsset")
     photo_assets: list[VisibilityPhotoAssetMetadata] = Field(default_factory=list, alias="photoAssets")
+    emoji_preference: EmojiPreference = Field(default="default", alias="emojiPreference")
     output_format: str = Field(default="structured", alias="outputFormat")
 
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)

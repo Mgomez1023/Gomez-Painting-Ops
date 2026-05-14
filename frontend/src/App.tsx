@@ -69,6 +69,7 @@ import type {
   PhotoAssetQuality,
   GeneratedPost,
   GeneratedPostPayload,
+  EmojiPreference,
   VisibilityGenerationResponse,
   VisibilityPhotoAssetMetadata,
 } from './types';
@@ -438,6 +439,7 @@ const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
 const activeBusinessIdStorageKey = 'gomez-ops-active-business-id-v1';
 const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
 const themeStorageKey = 'gomez-ops-theme';
+const emojiPreferenceStorageKey = 'gomez-ops-emoji-preference-v1';
 const maxPhotoAssetDataUrlLength = 2_800_000;
 const toastExitAnimationMs = 260;
 const defaultToastDurationMs = 5200;
@@ -1015,12 +1017,58 @@ function localReachKeywords(
   return baseKeywords.join(', ');
 }
 
+function visibilityEmojiCandidates(
+  profile: BusinessProfile,
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
+) {
+  const searchText = [
+    activeBusiness?.name,
+    activeBusiness?.industry,
+    activeBusiness?.location,
+    profile.business_name,
+    profile.industry,
+    ...profile.services_offered,
+    context?.service_area,
+    ...(context?.services ?? []),
+    context?.notes,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (/\b(garden|plant|plants|landscap|lawn|tree|flower|nursery)\b/.test(searchText)) {
+    return ['🌿', '🪴', '🌱', '☀️', '✅', '📍'];
+  }
+  if (/\b(food|restaurant|cafe|coffee|catering|grill|kitchen|bakery|meal)\b/.test(searchText)) {
+    return ['🍽️', '🔥', '😋', '✅', '📍'];
+  }
+  if (/\b(fitness|gym|workout|training|trainer|strength|yoga|pilates)\b/.test(searchText)) {
+    return ['💪', '⚡', '🏋️', '✅', '📍'];
+  }
+  if (/\b(paint|painting|painter|drywall|cabinet|trim|stain|color)\b/.test(searchText)) {
+    return ['🎨', '🏠', '🖌️', '✨', '✅', '📍'];
+  }
+  return ['✅', '📍', '💼', '✨'];
+}
+
+function visibilityEmojiPrefix(
+  preference: EmojiPreference,
+  profile: BusinessProfile,
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
+) {
+  const emojiCount = preference === 'less' ? 1 : preference === 'more' ? 4 : 2;
+  return `${visibilityEmojiCandidates(profile, activeBusiness, context).slice(0, emojiCount).join(' ')} `;
+}
+
 function buildLocalReachPostOutput(
   formData: VisibilityToolFormData,
   profile: BusinessProfile,
   activeBusiness: Business | null,
   context: BusinessContext | null,
   photoAsset: PhotoAsset | null,
+  emojiPreference: EmojiPreference,
 ) {
   const businessName = getVisibilityBusinessName(profile, activeBusiness);
   const service = getVisibilityService(formData, profile, context);
@@ -1031,13 +1079,14 @@ function buildLocalReachPostOutput(
   const goal = formData.goal;
   const tone = formData.tone || 'Friendly neighbor';
   const photoContext = formatVisibilityPhotoContext(photoAsset);
+  const emojiPrefix = visibilityEmojiPrefix(emojiPreference, profile, activeBusiness, context);
   const hook = localReachHook(destination, postType, tone, service, location);
   const body = localReachBody(destination, postType, goal, tone, businessName, service, location, profile, context, formData.notes, photoContext);
   const primaryPost =
     destination === 'Craigslist'
-      ? `${hook}\n\n${body}\n\n${ctaLine}`
-      : `${hook} ${body}\n\n${ctaLine}`;
-  const shortVersion = localReachShortVersion(destination, businessName, service, location, ctaLine);
+      ? `${emojiPrefix}${hook}\n\n${body}\n\n${ctaLine}`
+      : `${emojiPrefix}${hook} ${body}\n\n${ctaLine}`;
+  const shortVersion = `${emojiPrefix}${localReachShortVersion(destination, businessName, service, location, ctaLine)}`;
   const keywords = localReachKeywords(destination, service, location, businessName);
 
   return [
@@ -1062,15 +1111,17 @@ function buildVisibilityToolOutput(
   activeBusiness: Business | null,
   context: BusinessContext | null,
   photoAsset: PhotoAsset | null,
+  emojiPreference: EmojiPreference,
 ) {
   const businessName = getVisibilityBusinessName(profile, activeBusiness);
   const service = getVisibilityService(formData, profile, context);
   const location = getVisibilityLocation(formData, profile, activeBusiness, context);
   const ctaLine = formatVisibilityCta(profile, formData.cta, activeBusiness);
   const tone = formData.tone.toLowerCase();
+  const emojiPrefix = visibilityEmojiPrefix(emojiPreference, profile, activeBusiness, context);
 
   if (toolId === 'local-reach-post') {
-    return buildLocalReachPostOutput(formData, profile, activeBusiness, context, photoAsset);
+    return buildLocalReachPostOutput(formData, profile, activeBusiness, context, photoAsset, emojiPreference);
   }
 
   if (toolId === 'review-request') {
@@ -1078,12 +1129,12 @@ function buildVisibilityToolOutput(
     const jobCompleted = cleanSentencePart(formData.jobCompleted || service);
     const reviewLink = formData.reviewLink.trim();
     if (tone.includes('short')) {
-      return `Hi ${customerName}, thank you for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you leave us a Google review? ${reviewLink || ctaLine}`;
+      return `${emojiPrefix}Hi ${customerName}, thank you for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you leave us a Google review? ${reviewLink || ctaLine}`;
     }
     if (tone.includes('warm')) {
-      return `Hi ${customerName}, it was a pleasure helping with ${jobCompleted}. Thank you again for trusting ${businessName}. If you have a minute, a Google review would mean a lot and helps other local homeowners find us. ${reviewLink || ctaLine}`;
+      return `${emojiPrefix}Hi ${customerName}, it was a pleasure helping with ${jobCompleted}. Thank you again for trusting ${businessName}. If you have a minute, a Google review would mean a lot and helps other local homeowners find us. ${reviewLink || ctaLine}`;
     }
-    return `Hi ${customerName}, thank you again for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you be willing to leave us a Google review? It helps local homeowners feel confident reaching out. ${reviewLink || ctaLine}`;
+    return `${emojiPrefix}Hi ${customerName}, thank you again for choosing ${businessName} for ${jobCompleted}. If you have a minute, would you be willing to leave us a Google review? It helps local homeowners feel confident reaching out. ${reviewLink || ctaLine}`;
   }
 
   if (toolId === 'business-intro-post') {
@@ -1094,7 +1145,7 @@ function buildVisibilityToolOutput(
     const differentiatorLine = context?.differentiators?.length
       ? ` What makes us different: ${context.differentiators.slice(0, 2).join(' and ')}.`
       : '';
-    return `Hey neighbors - we are ${businessName}, a local ${getVisibilityIndustry(profile, activeBusiness).toLowerCase()} business serving ${location}. We help with ${services}. ${background}.${differentiatorLine} If you are planning a project nearby, ${ctaLine}.`;
+    return `${emojiPrefix}Hey neighbors - we are ${businessName}, a local ${getVisibilityIndustry(profile, activeBusiness).toLowerCase()} business serving ${location}. We help with ${services}. ${background}.${differentiatorLine} If you are planning a project nearby, ${ctaLine}.`;
   }
 
   if (toolId === 'craigslist-service-ad') {
@@ -1103,7 +1154,7 @@ function buildVisibilityToolOutput(
     const contact = formData.contact || profile.website_url || profile.phone_number;
     return [
       `Primary post:`,
-      `${businessName} - ${service} in ${location}`,
+      `${emojiPrefix}${businessName} - ${service} in ${location}`,
       '',
       `If you are dealing with ${formData.customerPainPoint || 'paint that looks tired, damaged, or overdue for a refresh'}, ${businessName} can help with reliable ${service.toLowerCase()} in ${location}.`,
       '',
@@ -1540,6 +1591,30 @@ function storeTheme(theme: AppTheme) {
     window.localStorage.setItem(themeStorageKey, theme);
   } catch {
     // Theme persistence is nice to have; the active theme still applies for this session.
+  }
+}
+
+function normalizeEmojiPreference(value: string | null): EmojiPreference | null {
+  return value === 'less' || value === 'default' || value === 'more' ? value : null;
+}
+
+function loadStoredEmojiPreference(): EmojiPreference {
+  if (typeof window === 'undefined') return 'default';
+
+  try {
+    return normalizeEmojiPreference(window.localStorage.getItem(emojiPreferenceStorageKey)) ?? 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+function storeEmojiPreference(preference: EmojiPreference) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(emojiPreferenceStorageKey, preference);
+  } catch {
+    // Emoji preference persistence is optional; generation still uses in-memory state.
   }
 }
 
@@ -2685,6 +2760,7 @@ function App() {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [activeSection, setActiveSection] = useState<AppSection>('calendar');
   const [theme, setTheme] = useState<AppTheme>(() => loadStoredTheme());
+  const [emojiPreference, setEmojiPreference] = useState<EmojiPreference>(() => loadStoredEmojiPreference());
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [activeBusinessId, setActiveBusinessId] = useState(() => loadStoredActiveBusinessId());
@@ -2993,6 +3069,10 @@ function App() {
     document.documentElement.dataset.theme = theme;
     storeTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    storeEmojiPreference(emojiPreference);
+  }, [emojiPreference]);
 
   useEffect(() => {
     if (activeSection !== 'jobs-queues') return;
@@ -3328,6 +3408,7 @@ function App() {
         contact: visibilityToolFormData.contact,
         photoAsset: selectedAsset ? photoAssetToVisibilityMetadata(selectedAsset) : null,
         photoAssets: selectedAssets.map(photoAssetToVisibilityMetadata),
+        emojiPreference,
         outputFormat: 'structured',
       });
       setVisibilityToolOutput(result);
@@ -3339,6 +3420,7 @@ function App() {
         activeBusiness,
         activeBusinessContext,
         selectedVisibilityToolId === 'craigslist-service-ad' ? selectedAssets[0] ?? null : selectedAsset,
+        emojiPreference,
       );
       setVisibilityToolOutput(fallbackVisibilityResponseFromText(generatedText));
       setVisibilityToolError(
@@ -3496,6 +3578,7 @@ function App() {
         active_business: activeBusiness,
         business_profile: businessProfile,
         business_context: activeBusinessContext,
+        emoji_preference: emojiPreference,
         photo_asset: selectedAsset ? photoAssetToVisibilityMetadata(selectedAsset) : null,
         photo_assets: selectedAssets.map(photoAssetToVisibilityMetadata),
       },
@@ -3660,6 +3743,7 @@ function App() {
         campaign_theme: campaignTheme,
         separate_meta_platforms: true,
         business_profile: activeBusinessGenerationProfile,
+        emoji_preference: emojiPreference,
       });
       setCalendarWeekStartDate(settings.weekStartDate);
       await Promise.all([loadWeeklyQueue(settings.weekStartDate), loadCampaignQueue(), loadPhotoAssets()]);
@@ -3725,6 +3809,7 @@ function App() {
             platform,
             post_type: postType,
             business_profile: activeBusinessGenerationProfile,
+            emoji_preference: emojiPreference,
           }),
         ),
       );
@@ -3906,6 +3991,7 @@ function App() {
         platform: post.sourcePlatform,
         post_type: getContentItemType(post.item),
         business_profile: activeBusinessGenerationProfile ?? businessProfile,
+        emoji_preference: emojiPreference,
       });
       await Promise.all([loadWeeklyQueue(), loadCampaignQueue()]);
       pushToast({
@@ -5072,11 +5158,13 @@ function App() {
           businesses={businesses}
           businessDraft={businessCreateDraft}
           creatingBusiness={creatingBusiness}
+          emojiPreference={emojiPreference}
           loadingBusinesses={loadingBusinesses}
           theme={theme}
           onBusinessCreate={() => void handleCreateBusiness()}
           onBusinessDraftChange={setBusinessCreateDraft}
           onBusinessSelect={setActiveBusinessId}
+          onEmojiPreferenceChange={setEmojiPreference}
           onThemeChange={(nextTheme) => setTheme(nextTheme)}
         />
       ) : null}
@@ -5987,11 +6075,13 @@ function SettingsSection({
   businesses,
   businessDraft,
   creatingBusiness,
+  emojiPreference,
   loadingBusinesses,
   theme,
   onBusinessCreate,
   onBusinessDraftChange,
   onBusinessSelect,
+  onEmojiPreferenceChange,
   onThemeChange,
 }: {
   activeBusiness: Business | null;
@@ -5999,14 +6089,21 @@ function SettingsSection({
   businesses: Business[];
   businessDraft: BusinessCreateDraft;
   creatingBusiness: boolean;
+  emojiPreference: EmojiPreference;
   loadingBusinesses: boolean;
   theme: AppTheme;
   onBusinessCreate: () => void;
   onBusinessDraftChange: (draft: BusinessCreateDraft) => void;
   onBusinessSelect: (businessId: string) => void;
+  onEmojiPreferenceChange: (preference: EmojiPreference) => void;
   onThemeChange: (theme: AppTheme) => void;
 }) {
   const darkModeEnabled = theme === 'dark';
+  const emojiOptions: Array<{ label: string; value: EmojiPreference }> = [
+    { label: 'Less', value: 'less' },
+    { label: 'Default', value: 'default' },
+    { label: 'More', value: 'more' },
+  ];
 
   return (
     <section className="panel settings-panel">
@@ -6033,6 +6130,25 @@ function SettingsSection({
             onDraftChange={onBusinessDraftChange}
             onSelect={onBusinessSelect}
           />
+        </div>
+        <div className="settings-row">
+          <div>
+            <strong>Emoji use in generated posts</strong>
+            <span>Controls how many emojis GomezOps uses in captions and post copy.</span>
+          </div>
+          <div className="settings-segmented-control" role="group" aria-label="Emoji use in generated posts">
+            {emojiOptions.map((option) => (
+              <button
+                aria-pressed={emojiPreference === option.value}
+                className={emojiPreference === option.value ? 'active' : ''}
+                key={option.value}
+                type="button"
+                onClick={() => onEmojiPreferenceChange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
         <label className="settings-row">
           <div>

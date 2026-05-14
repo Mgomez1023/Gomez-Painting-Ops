@@ -148,6 +148,8 @@ export type BusinessProfile = {
   >;
 };
 
+export type EmojiPreference = 'less' | 'default' | 'more';
+
 export type Business = {
   id: string;
   owner_id: string;
@@ -267,6 +269,7 @@ export type VisibilityGenerationRequest = {
   contact?: string;
   photoAsset?: VisibilityPhotoAssetMetadata | null;
   photoAssets?: VisibilityPhotoAssetMetadata[];
+  emojiPreference?: EmojiPreference;
   outputFormat?: string;
 };
 
@@ -338,6 +341,7 @@ export type WeeklySocialQueueGenerateRequest = {
   separate_meta_platforms?: boolean;
   include_facebook_groups?: boolean;
   business_profile?: BusinessProfile | null;
+  emoji_preference?: EmojiPreference;
 };
 
 export type ManualSocialPostGenerateRequest = {
@@ -346,6 +350,7 @@ export type ManualSocialPostGenerateRequest = {
   platform?: CampaignContentQueueItem['platform'] | null;
   post_type?: string;
   business_profile?: BusinessProfile | null;
+  emoji_preference?: EmojiPreference;
 };
 
 export type SocialQueueGenerateResponse = {

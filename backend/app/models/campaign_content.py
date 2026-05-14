@@ -14,6 +14,7 @@ CampaignPlatform = Literal[
     "Nextdoor",
 ]
 BusinessProfilePlatform = Literal["Facebook", "Instagram", "Google Business", "Facebook Groups"]
+EmojiPreference = Literal["less", "default", "more"]
 
 
 class CampaignDraftSet(BaseModel):
@@ -137,6 +138,7 @@ class WeeklySocialQueueGenerateRequest(BaseModel):
     separate_meta_platforms: bool = False
     include_facebook_groups: bool = False
     business_profile: BusinessProfileInput | None = None
+    emoji_preference: EmojiPreference = "default"
 
 
 class ManualSocialPostGenerateRequest(BaseModel):
@@ -145,6 +147,7 @@ class ManualSocialPostGenerateRequest(BaseModel):
     platform: CampaignPlatform | None = None
     post_type: str = "General"
     business_profile: BusinessProfileInput | None = None
+    emoji_preference: EmojiPreference = "default"
 
 
 class PostDraftTextUpdateRequest(BaseModel):

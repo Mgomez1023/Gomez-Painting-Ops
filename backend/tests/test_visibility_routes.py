@@ -102,6 +102,33 @@ async def test_generate_visibility_uses_active_business_context_in_fallback() ->
 
 
 @pytest.mark.anyio
+async def test_generate_visibility_respects_emoji_preference_in_fallback() -> None:
+    base_payload = {
+        "toolType": "local_reach_post",
+        "destination": "Google Business Profile",
+        "postType": "Service promotion",
+        "serviceFocus": "Interior painting",
+        "location": "Oak Park",
+        "businessProfile": {
+            "business_name": "Marom Painting",
+            "industry": "Residential painting",
+            "services_offered": ["Interior painting"],
+            "website_url": "https://marompainting.org",
+        },
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        less_response = await client.post("/visibility/generate", json={**base_payload, "emojiPreference": "less"})
+        more_response = await client.post("/visibility/generate", json={**base_payload, "emojiPreference": "more"})
+
+    assert less_response.status_code == 200
+    assert more_response.status_code == 200
+    assert less_response.json()["primary"].startswith("🎨 ")
+    assert more_response.json()["primary"].startswith("🎨 🏠 🖌️ ✨ ")
+
+
+@pytest.mark.anyio
 async def test_generate_visibility_falls_back_when_llm_service_fails() -> None:
     async def override_llm_service() -> FailingVisibilityLLMService:
         return FailingVisibilityLLMService()

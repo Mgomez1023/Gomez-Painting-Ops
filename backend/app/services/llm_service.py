@@ -101,6 +101,12 @@ class LLMService:
             or "home services"
         )
         cta_line = self._visibility_cta_line(request.cta or primary_cta, website, request.contact)
+        emoji_prefix = self._emoji_prefix(
+            request.emoji_preference,
+            industry=industry,
+            service=service,
+            business_name=business_name,
+        )
 
         if request.tool_type == "craigslist_service_ad":
             return self._generate_visibility_craigslist_fallback(
@@ -109,6 +115,7 @@ class LLMService:
                 service=service,
                 location=location,
                 cta_line=cta_line,
+                emoji_prefix=emoji_prefix,
             )
 
         if request.tool_type == "review_request":
@@ -132,8 +139,8 @@ class LLMService:
             if review_link:
                 primary = f"{primary} {review_link}"
             return VisibilityGenerationResponse(
-                primary=primary,
-                shortVersion=f"Hi {customer_name}, thanks again for choosing {business_name}. A quick Google review would mean a lot. {review_link}".strip(),
+                primary=f"{emoji_prefix}{primary}",
+                shortVersion=f"{emoji_prefix}Hi {customer_name}, thanks again for choosing {business_name}. A quick Google review would mean a lot. {review_link}".strip(),
                 ctaLine=review_link or cta_line,
                 titles=["Review request message"],
                 hashtagsOrKeywords=["Google review", business_name, location],
@@ -163,8 +170,8 @@ class LLMService:
                 f"If you are planning a project nearby, {cta_line}."
             )
             return VisibilityGenerationResponse(
-                primary=primary,
-                shortVersion=f"Hey neighbors - {business_name} helps with {services} around {location}. {cta_line}.",
+                primary=f"{emoji_prefix}{primary}",
+                shortVersion=f"{emoji_prefix}Hey neighbors - {business_name} helps with {services} around {location}. {cta_line}.",
                 ctaLine=cta_line,
                 titles=[f"{business_name} in {location}", f"Local help for {services}"],
                 hashtagsOrKeywords=[business_name, location, service],
@@ -177,6 +184,7 @@ class LLMService:
             service=service,
             location=location,
             cta_line=cta_line,
+            emoji_prefix=emoji_prefix,
             context_line=self._visibility_context_line(profile, business_context),
         )
 
@@ -261,6 +269,7 @@ class LLMService:
         service: str,
         location: str,
         cta_line: str,
+        emoji_prefix: str,
         context_line: str = "",
     ) -> VisibilityGenerationResponse:
         destination = request.destination or "General Social Post"
@@ -298,10 +307,10 @@ class LLMService:
             body = f"{body} {photo_line}"
         body = f"{body}{note_line}"
 
-        primary = f"{hook} {body}\n\n{cta_line}"
-        short_version = f"{business_name} can help with {service.lower()} in {location}. {cta_line}"
+        primary = f"{emoji_prefix}{hook} {body}\n\n{cta_line}"
+        short_version = f"{emoji_prefix}{business_name} can help with {service.lower()} in {location}. {cta_line}"
         if destination in {"Facebook Group", "Neighborhood Group"}:
-            short_version = f"Hey neighbors - {business_name} helps with {service.lower()} around {location}. Happy to take a look."
+            short_version = f"{emoji_prefix}Hey neighbors - {business_name} helps with {service.lower()} around {location}. Happy to take a look."
 
         return VisibilityGenerationResponse(
             primary=primary,
@@ -324,6 +333,7 @@ class LLMService:
         service: str,
         location: str,
         cta_line: str,
+        emoji_prefix: str,
     ) -> VisibilityGenerationResponse:
         pain_point = request.customer_pain_point or "walls, trim, cabinets, or exterior areas that need a cleaner finish"
         trust_signals = request.trust_signals or "clear estimates, careful prep, clean work areas, and local service"
@@ -334,7 +344,7 @@ class LLMService:
         image_suggestions = self._visibility_image_suggestions(request.photo_assets)
 
         primary = (
-            f"{business_name} - {service} in {location}\n\n"
+            f"{emoji_prefix}{business_name} - {service} in {location}\n\n"
             f"If you are dealing with {pain_point}, {business_name} can help with reliable {service.lower()} "
             f"for homeowners in {location} and nearby areas.\n\n"
             f"Services:\n- " + "\n- ".join(unique_services) + "\n\n"
@@ -347,7 +357,7 @@ class LLMService:
 
         return VisibilityGenerationResponse(
             primary=primary,
-            shortVersion=f"{service} in {location}. {business_name} offers clear estimates and clean local painting work. {cta_line}",
+            shortVersion=f"{emoji_prefix}{service} in {location}. {business_name} offers clear estimates and clean local painting work. {cta_line}",
             ctaLine=cta_line,
             titles=[
                 f"{service} in {location} - Free Estimate",
@@ -365,6 +375,24 @@ class LLMService:
             imageSuggestions=image_suggestions,
             generationMode="fallback",
         )
+
+    @classmethod
+    def _emoji_prefix(cls, preference: str, industry: str = "", service: str = "", business_name: str = "") -> str:
+        emoji_count = {"less": 1, "more": 4}.get(preference, 2)
+        return f"{' '.join(cls._emoji_candidates(industry=industry, service=service, business_name=business_name)[:emoji_count])} "
+
+    @staticmethod
+    def _emoji_candidates(industry: str = "", service: str = "", business_name: str = "") -> list[str]:
+        search_text = f"{industry} {service} {business_name}".lower()
+        if any(term in search_text for term in ("garden", "plant", "landscap", "lawn", "tree", "flower", "nursery")):
+            return ["🌿", "🪴", "🌱", "☀️", "✅", "📍"]
+        if any(term in search_text for term in ("food", "restaurant", "cafe", "coffee", "catering", "grill", "kitchen", "bakery", "meal")):
+            return ["🍽️", "🔥", "😋", "✅", "📍"]
+        if any(term in search_text for term in ("fitness", "gym", "workout", "training", "trainer", "strength", "yoga", "pilates")):
+            return ["💪", "⚡", "🏋️", "✅", "📍"]
+        if any(term in search_text for term in ("paint", "painter", "drywall", "cabinet", "trim", "stain", "color")):
+            return ["🎨", "🏠", "🖌️", "✨", "✅", "📍"]
+        return ["✅", "📍", "💼", "✨"]
 
     @staticmethod
     def _first_non_empty(values: list[str], fallback: str) -> str:
@@ -631,6 +659,10 @@ class LLMService:
                             f"{system_prompt}\n\n"
                             "Return only a VisibilityGenerationResponse JSON object. "
                             "Use generationMode=\"llm\". "
+                            "Follow emojiPreference exactly: less means 0-1 natural emoji total; "
+                            "default means 1-3 tasteful emojis total, usually 1-2 at the start of the main caption; "
+                            "more means 3-6 relevant emojis total without spammy or childish copy. "
+                            "Choose emojis that fit the business industry and content. "
                             "Do not include fake claims, guarantees, or unsupported urgency."
                         ),
                     },

@@ -649,6 +649,37 @@ body.modal-open {
   width: 22px;
 }
 
+.settings-segmented-control {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 4px;
+}
+
+.settings-segmented-control button {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+.settings-segmented-control button:hover {
+  color: var(--color-text);
+}
+
+.settings-segmented-control button.active {
+  background: var(--color-primary);
+  color: #102016;
+}
+
 .settings-business-row {
   align-items: stretch;
   display: grid;

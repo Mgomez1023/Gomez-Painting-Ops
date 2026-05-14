@@ -609,7 +609,7 @@ def test_generate_manual_post_creates_one_default_google_business_item() -> None
     assert len(result.queue_items) == 1
     queue_item = result.queue_items[0]
     assert queue_item.platform == "Google Business"
-    assert queue_item.draft_text == "General Google Business caption. https://marompainting.org"
+    assert "General Google Business caption. https://marompainting.org" in queue_item.draft_text
     assert queue_item.status == "Draft"
     assert queue_item.landing_page_url == "https://marompainting.org"
     assert queue_item.image_path == "/media/campaigns/image-1.jpg"
@@ -651,7 +651,8 @@ def test_generate_manual_post_uses_business_profile_when_no_campaign_is_selected
     assert queue_item.business == "Northside Landscaping"
     assert queue_item.cta == "Request a lawn care quote"
     assert queue_item.landing_page_url == "https://northside-landscaping.example"
-    assert queue_item.draft_text == "Offer / CTA Google Business caption. https://northside-landscaping.example"
+    assert "Offer / CTA Google Business caption. https://northside-landscaping.example" in queue_item.draft_text
+    assert queue_item.draft_text.startswith("🌿 🪴")
 
 
 def test_generate_manual_post_passes_selected_post_type_into_generation() -> None:
@@ -664,7 +665,7 @@ def test_generate_manual_post_passes_selected_post_type_into_generation() -> Non
 
     queue_item = result.queue_items[0]
     assert queue_item.post_type == "FAQ / Education"
-    assert queue_item.draft_text == "FAQ / Education Google Business caption. https://marompainting.org"
+    assert "FAQ / Education Google Business caption. https://marompainting.org" in queue_item.draft_text
     assert campaign_agent.generate_for_post_type_calls[0]["post_type"] == "FAQ / Education"
 
 
@@ -679,7 +680,7 @@ def test_generate_manual_post_merges_instagram_into_meta_dual() -> None:
     assert len(result.queue_items) == 1
     queue_item = result.queue_items[0]
     assert queue_item.platform == "Meta Dual"
-    assert queue_item.draft_text == "General Facebook caption. https://marompainting.org"
+    assert "General Facebook caption. https://marompainting.org" in queue_item.draft_text
     assert campaign_agent.generate_for_post_type_calls[0]["platform"] == "Meta Dual"
 
 
@@ -694,5 +695,5 @@ def test_generate_manual_post_creates_facebook_groups_item_with_group_copy() -> 
     assert len(result.queue_items) == 1
     queue_item = result.queue_items[0]
     assert queue_item.platform == "Facebook Groups"
-    assert queue_item.draft_text == "General Facebook Groups caption. https://marompainting.org"
+    assert "General Facebook Groups caption. https://marompainting.org" in queue_item.draft_text
     assert campaign_agent.generate_for_post_type_calls[0]["platform"] == "Facebook Groups"
