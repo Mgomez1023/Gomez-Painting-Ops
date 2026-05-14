@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     default_business_id: str = "marom-painting"
     photo_assets_data_file: str | None = None
     photo_assets_media_dir: str | None = None
+    supabase_enabled: bool = False
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = None
+    supabase_service_role_key: str | None = None
+    dev_owner_user_id: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

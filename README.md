@@ -98,11 +98,19 @@ GOOGLE_CAMPAIGNS_SHEET_NAME=Campaigns
 GOOGLE_CAMPAIGN_CONTENT_QUEUE_SHEET_NAME=Campaign Content Queue
 GOOGLE_POSTS_SHEET_NAME=Posts
 
+SUPABASE_ENABLED=true
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-backend-only-service-role-key
+DEV_OWNER_USER_ID=temporary-auth-user-uuid
+
 PUBLIC_SITE_BASE_URL=https://your-vercel-domain.example
 API_PUBLIC_BASE_URL=https://your-vercel-domain.example
 ```
 
 Use `GOOGLE_SERVICE_ACCOUNT_JSON` on Vercel instead of `GOOGLE_SERVICE_ACCOUNT_FILE`; paste the service account JSON as the environment variable value and keep the JSON file out of git. Share the Google Sheet with the service account email.
+
+`SUPABASE_SERVICE_ROLE_KEY` is for trusted backend operations only. Do not expose it through frontend or Vite environment variables. `DEV_OWNER_USER_ID` is a temporary Step 2 bridge for local/API development before login/signup exists; it must be replaced by JWT-derived Supabase user identity before real multi-user access.
 
 If you want live publishing instead of mock/manual workflows, set the relevant publisher values too:
 

@@ -11,20 +11,25 @@ import {
   ApiError,
   approveCampaignContent,
   approveContent,
-  createPhotoAsset,
+  createBusiness,
+  createBusinessPhotoAsset,
+  createGeneratedPost,
+  deleteBusinessPhotoAsset,
   deletePost,
-  deletePhotoAsset,
   generateAndSave,
   generateAndSaveCampaign,
   generateManualSocialPost,
   generateVisibilityContent,
   generateWeeklySocialPosts,
+  getBusinessContext,
+  listBusinessPhotoAssets,
+  listBusinesses,
+  listGeneratedPosts,
   getCampaignContentQueue,
   getCampaigns,
   getContentQueue,
   getJobs,
   getMediaUrl,
-  getPhotoAssets,
   getWeeklySocialQueue,
   markCampaignCopied,
   markCampaignPublished,
@@ -39,13 +44,17 @@ import {
   restorePostToQueue,
   runDuePublishing,
   scheduleCampaignContent,
+  upsertBusinessContext,
   updatePostImage,
-  updatePhotoAsset,
   updatePostDraftText,
   updatePostScheduledAt,
 } from './api';
 import type {
   BusinessProfile,
+  Business,
+  BusinessContext,
+  BusinessContextPayload,
+  BusinessPhotoAsset,
   Campaign,
   CampaignContentQueueItem,
   CampaignDraftSet,
@@ -56,6 +65,8 @@ import type {
   PhotoAssetCategory,
   PhotoAssetPayload,
   PhotoAssetQuality,
+  GeneratedPost,
+  GeneratedPostPayload,
   VisibilityGenerationResponse,
   VisibilityPhotoAssetMetadata,
 } from './types';
@@ -98,6 +109,22 @@ type VisibilityChannel =
   | 'Craigslist'
   | 'Neighborhood Groups'
   | 'General Social Post';
+type SavedGeneratedPostFilter = 'all' | 'reach' | 'review' | 'intro';
+
+type BusinessCreateDraft = {
+  name: string;
+  industry: string;
+  location: string;
+};
+
+type BusinessContextDraft = {
+  servicesText: string;
+  target_customers: string;
+  brand_voice: string;
+  differentiatorsText: string;
+  service_area: string;
+  notes: string;
+};
 
 type PhotoAssetDraft = {
   image_url: string | null;
@@ -387,9 +414,9 @@ const weeklyScheduleContentTypeOptions = [
 
 const defaultWeeklyCampaignTheme = 'Weekly Local Business Content';
 const businessProfileStorageKey = 'gomez-ops-business-profile-v1';
+const activeBusinessIdStorageKey = 'gomez-ops-active-business-id-v1';
 const photoLibraryStorageKey = 'gomez-ops-photo-library-v1';
 const themeStorageKey = 'gomez-ops-theme';
-const defaultPhotoAssetBusinessId = 'marom-painting';
 const maxPhotoAssetDataUrlLength = 2_800_000;
 const businessProfilePlatforms: BusinessProfile['platforms_used'] = [
   'Facebook',
@@ -449,6 +476,21 @@ const defaultBusinessProfile: BusinessProfile = {
   primary_cta: 'Request a free estimate',
   platforms_used: [...defaultBusinessProfilePlatforms],
   visibility_channels: [...defaultVisibilityChannels],
+};
+
+const defaultBusinessCreateDraft: BusinessCreateDraft = {
+  name: '',
+  industry: '',
+  location: '',
+};
+
+const emptyBusinessContextDraft: BusinessContextDraft = {
+  servicesText: '',
+  target_customers: '',
+  brand_voice: '',
+  differentiatorsText: '',
+  service_area: '',
+  notes: '',
 };
 
 const appNavItems: AppNavItem[] = [
@@ -739,9 +781,71 @@ function formatVisibilityPhotoContext(asset: PhotoAsset | null) {
     : `Selected photo: ${asset.title}`;
 }
 
-function formatVisibilityCta(profile: BusinessProfile, cta: string) {
+function getVisibilityBusinessName(profile: BusinessProfile, activeBusiness: Business | null) {
+  return activeBusiness?.name?.trim() || profile.business_name.trim() || defaultBusinessProfile.business_name;
+}
+
+function getVisibilityIndustry(profile: BusinessProfile, activeBusiness: Business | null) {
+  return activeBusiness?.industry?.trim() || profile.industry.trim() || defaultBusinessProfile.industry;
+}
+
+function getVisibilityWebsite(profile: BusinessProfile, activeBusiness: Business | null) {
+  return activeBusiness?.website_url?.trim() || profile.website_url.trim();
+}
+
+function getVisibilityService(
+  formData: VisibilityToolFormData,
+  profile: BusinessProfile,
+  context: BusinessContext | null,
+) {
+  return cleanSentencePart(
+    formData.serviceFocus ||
+      firstProfileValue(context?.services ?? [], '') ||
+      firstProfileValue(profile.services_offered, 'painting services'),
+  );
+}
+
+function getVisibilityLocation(
+  formData: VisibilityToolFormData,
+  profile: BusinessProfile,
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
+) {
+  return cleanSentencePart(
+    formData.location ||
+      context?.service_area ||
+      activeBusiness?.location ||
+      firstProfileValue(profile.service_area_cities, 'the local area'),
+  );
+}
+
+function formatBusinessContextTrust(profile: BusinessProfile, context: BusinessContext | null) {
+  const targetCustomers = context?.target_customers?.trim() || profile.target_customer.trim();
+  const differentiators = context?.differentiators?.map((item) => item.trim()).filter(Boolean) ?? [];
+  const brandVoice = context?.brand_voice?.trim() || profile.brand_tone.trim();
+  const notes = context?.notes?.trim();
+
+  if (differentiators.length > 0 && targetCustomers) {
+    return `We work with ${targetCustomers.toLowerCase()} and focus on ${differentiators.slice(0, 2).join(' and ').toLowerCase()}.`;
+  }
+  if (differentiators.length > 0) {
+    return `We focus on ${differentiators.slice(0, 2).join(' and ').toLowerCase()}.`;
+  }
+  if (targetCustomers) {
+    return `We work with ${targetCustomers.toLowerCase()} who want dependable, neat work.`;
+  }
+  if (brandVoice) {
+    return `The tone is ${brandVoice.toLowerCase()}, with clear communication throughout.`;
+  }
+  if (notes) {
+    return cleanSentencePart(notes);
+  }
+  return 'We focus on dependable, neat work and clear communication.';
+}
+
+function formatVisibilityCta(profile: BusinessProfile, cta: string, activeBusiness: Business | null = null) {
   const cleanCta = cleanSentencePart(cta || profile.primary_cta || 'Request a free estimate');
-  const website = profile.website_url.trim();
+  const website = getVisibilityWebsite(profile, activeBusiness);
   return website ? `${cleanCta}: ${website}` : cleanCta;
 }
 
@@ -794,12 +898,11 @@ function localReachBody(
   service: string,
   location: string,
   profile: BusinessProfile,
+  context: BusinessContext | null,
   notes: string,
   photoContext: string,
 ) {
-  const profileTrust = profile.target_customer.trim()
-    ? `We work with ${profile.target_customer.toLowerCase()} who want dependable, neat work.`
-    : 'We focus on dependable, neat work and clear communication.';
+  const profileTrust = formatBusinessContextTrust(profile, context);
   const noteLine = notes ? ` ${cleanSentencePart(notes)}.` : '';
   const photoLine = photoContext ? ` ${photoContext}.` : '';
 
@@ -864,11 +967,11 @@ function localReachKeywords(
   destination: LocalReachDestination,
   service: string,
   location: string,
-  profile: BusinessProfile,
+  businessName: string,
 ) {
   const baseKeywords = [
     `${service} ${location}`,
-    `${profile.business_name || defaultBusinessProfile.business_name}`,
+    businessName,
     `${location} painting contractor`,
   ];
   if (destination === 'Facebook Group' || destination === 'Neighborhood Group' || destination === 'General Social Post') {
@@ -883,25 +986,27 @@ function localReachKeywords(
 function buildLocalReachPostOutput(
   formData: VisibilityToolFormData,
   profile: BusinessProfile,
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
   photoAsset: PhotoAsset | null,
 ) {
-  const businessName = profile.business_name.trim() || defaultBusinessProfile.business_name;
-  const service = cleanSentencePart(formData.serviceFocus || firstProfileValue(profile.services_offered, 'painting services'));
-  const location = cleanSentencePart(formData.location || firstProfileValue(profile.service_area_cities, 'the local area'));
-  const ctaLine = formatVisibilityCta(profile, formData.cta);
+  const businessName = getVisibilityBusinessName(profile, activeBusiness);
+  const service = getVisibilityService(formData, profile, context);
+  const location = getVisibilityLocation(formData, profile, activeBusiness, context);
+  const ctaLine = formatVisibilityCta(profile, formData.cta, activeBusiness);
   const destination = formData.destination;
   const postType = formData.postType;
   const goal = formData.goal;
   const tone = formData.tone || 'Friendly neighbor';
   const photoContext = formatVisibilityPhotoContext(photoAsset);
   const hook = localReachHook(destination, postType, tone, service, location);
-  const body = localReachBody(destination, postType, goal, tone, businessName, service, location, profile, formData.notes, photoContext);
+  const body = localReachBody(destination, postType, goal, tone, businessName, service, location, profile, context, formData.notes, photoContext);
   const primaryPost =
     destination === 'Craigslist'
       ? `${hook}\n\n${body}\n\n${ctaLine}`
       : `${hook} ${body}\n\n${ctaLine}`;
   const shortVersion = localReachShortVersion(destination, businessName, service, location, ctaLine);
-  const keywords = localReachKeywords(destination, service, location, profile);
+  const keywords = localReachKeywords(destination, service, location, businessName);
 
   return [
     'Primary post:',
@@ -922,16 +1027,18 @@ function buildVisibilityToolOutput(
   toolId: VisibilityToolId,
   formData: VisibilityToolFormData,
   profile: BusinessProfile,
+  activeBusiness: Business | null,
+  context: BusinessContext | null,
   photoAsset: PhotoAsset | null,
 ) {
-  const businessName = profile.business_name.trim() || defaultBusinessProfile.business_name;
-  const service = cleanSentencePart(formData.serviceFocus || firstProfileValue(profile.services_offered, 'painting services'));
-  const location = cleanSentencePart(formData.location || firstProfileValue(profile.service_area_cities, 'the local area'));
-  const ctaLine = formatVisibilityCta(profile, formData.cta);
+  const businessName = getVisibilityBusinessName(profile, activeBusiness);
+  const service = getVisibilityService(formData, profile, context);
+  const location = getVisibilityLocation(formData, profile, activeBusiness, context);
+  const ctaLine = formatVisibilityCta(profile, formData.cta, activeBusiness);
   const tone = formData.tone.toLowerCase();
 
   if (toolId === 'local-reach-post') {
-    return buildLocalReachPostOutput(formData, profile, photoAsset);
+    return buildLocalReachPostOutput(formData, profile, activeBusiness, context, photoAsset);
   }
 
   if (toolId === 'review-request') {
@@ -948,9 +1055,14 @@ function buildVisibilityToolOutput(
   }
 
   if (toolId === 'business-intro-post') {
-    const services = cleanSentencePart(formData.servicesToMention || service);
-    const background = cleanSentencePart(formData.businessBackground || profile.brand_tone);
-    return `Hey neighbors - we are ${businessName}, a local ${profile.industry.toLowerCase()} business serving ${location}. We help with ${services}. ${background}. If you are planning a project nearby, ${ctaLine}.`;
+    const services = cleanSentencePart(
+      formData.servicesToMention || (context?.services ?? []).slice(0, 3).join(', ') || service,
+    );
+    const background = cleanSentencePart(formData.businessBackground || context?.notes || context?.brand_voice || profile.brand_tone);
+    const differentiatorLine = context?.differentiators?.length
+      ? ` What makes us different: ${context.differentiators.slice(0, 2).join(' and ')}.`
+      : '';
+    return `Hey neighbors - we are ${businessName}, a local ${getVisibilityIndustry(profile, activeBusiness).toLowerCase()} business serving ${location}. We help with ${services}. ${background}.${differentiatorLine} If you are planning a project nearby, ${ctaLine}.`;
   }
 
   if (toolId === 'craigslist-service-ad') {
@@ -999,6 +1111,135 @@ function photoAssetToVisibilityMetadata(asset: PhotoAsset): VisibilityPhotoAsset
   };
 }
 
+function businessPhotoAssetToPhotoAsset(asset: BusinessPhotoAsset): PhotoAsset {
+  const metadata = parseBusinessPhotoAssetMetadata(asset.tags);
+  const imageSource = asset.public_url || asset.storage_path;
+  const imageUrl = asset.public_url || (/^https?:\/\//i.test(asset.storage_path) ? asset.storage_path : null);
+  const imagePath = imageUrl === asset.storage_path ? null : asset.storage_path;
+  const imageFilename = metadata.imageFilename || imageFilenameFromSource(imageSource);
+
+  return {
+    id: asset.id,
+    business_id: asset.business_id,
+    image_url: imageUrl,
+    image_path: imagePath,
+    image_filename: imageFilename,
+    title: asset.caption?.trim() || imageFilename || 'Photo asset',
+    description: metadata.description,
+    category: metadata.category,
+    service_type: asset.job_type?.trim() || '',
+    location: metadata.location,
+    tags: metadata.tags,
+    quality: metadata.quality,
+    used_count: 0,
+    created_at: asset.created_at,
+    updated_at: asset.updated_at,
+  };
+}
+
+function photoAssetDraftToBusinessPhotoAssetPayload(
+  draft: PhotoAssetDraft,
+): Omit<BusinessPhotoAsset, 'id' | 'business_id' | 'created_at' | 'updated_at'> {
+  const imageSource = getPhotoAssetImageSource(draft)?.trim() || '';
+  const publicUrl = draft.image_url?.trim() && /^https?:\/\//i.test(draft.image_url.trim())
+    ? draft.image_url.trim()
+    : null;
+
+  return {
+    storage_path: imageSource,
+    public_url: publicUrl,
+    caption: draft.title.trim(),
+    tags: buildBusinessPhotoAssetTags({
+      tags: normalizePhotoTags(draft.tagsText),
+      category: draft.category,
+      quality: draft.quality,
+      location: draft.location,
+      description: draft.description,
+      imageFilename: draft.image_filename,
+    }),
+    job_type: draft.service_type.trim() || null,
+  };
+}
+
+function photoAssetPayloadToBusinessPhotoAssetPayload(
+  payload: PhotoAssetPayload,
+): Omit<BusinessPhotoAsset, 'id' | 'business_id' | 'created_at' | 'updated_at'> {
+  const imageSource = payload.image_data || payload.image_url || '';
+  const publicUrl = payload.image_url?.trim() && /^https?:\/\//i.test(payload.image_url.trim())
+    ? payload.image_url.trim()
+    : null;
+
+  return {
+    storage_path: imageSource,
+    public_url: publicUrl,
+    caption: payload.title.trim(),
+    tags: buildBusinessPhotoAssetTags({
+      tags: payload.tags,
+      category: payload.category,
+      quality: payload.quality,
+      location: payload.location,
+      description: payload.description,
+      imageFilename: payload.image_filename,
+    }),
+    job_type: payload.service_type.trim() || null,
+  };
+}
+
+function buildBusinessPhotoAssetTags({
+  category,
+  description,
+  imageFilename,
+  location,
+  quality,
+  tags,
+}: {
+  category: PhotoAssetCategory;
+  description: string;
+  imageFilename?: string | null;
+  location: string;
+  quality: PhotoAssetQuality;
+  tags: string[];
+}) {
+  const metadataTags = [
+    `gomez:category=${category}`,
+    `gomez:quality=${quality}`,
+    location.trim() ? `gomez:location=${location.trim()}` : '',
+    description.trim() ? `gomez:description=${description.trim()}` : '',
+    imageFilename?.trim() ? `gomez:filename=${imageFilename.trim()}` : '',
+  ].filter(Boolean);
+
+  return [...tags.map((tag) => tag.trim()).filter(Boolean), ...metadataTags];
+}
+
+function parseBusinessPhotoAssetMetadata(tags: string[]) {
+  const visibleTags: string[] = [];
+  let category: PhotoAssetCategory = 'Finished Project';
+  let quality: PhotoAssetQuality = 'standard';
+  let location = '';
+  let description = '';
+  let imageFilename: string | null = null;
+
+  for (const tag of tags) {
+    if (tag.startsWith('gomez:category=')) {
+      const value = tag.replace('gomez:category=', '');
+      category = isPhotoAssetCategory(value) ? value : category;
+    } else if (tag.startsWith('gomez:quality=')) {
+      const value = tag.replace('gomez:quality=', '');
+      quality = isPhotoAssetQuality(value) ? value : quality;
+    } else if (tag.startsWith('gomez:location=')) {
+      location = tag.replace('gomez:location=', '').trim();
+    } else if (tag.startsWith('gomez:description=')) {
+      description = tag.replace('gomez:description=', '').trim();
+    } else if (tag.startsWith('gomez:filename=')) {
+      imageFilename = tag.replace('gomez:filename=', '').trim() || null;
+    } else {
+      visibleTags.push(tag);
+    }
+  }
+
+  return { category, description, imageFilename, location, quality, tags: visibleTags };
+}
+
 function fallbackVisibilityResponseFromText(text: string): VisibilityGenerationResponse {
   return {
     primary: text,
@@ -1020,6 +1261,80 @@ function formatVisibilityResponseForCopy(output: VisibilityGenerationResponse | 
     lines.push('', 'Image suggestions:', ...output.imageSuggestions.map((suggestion) => `- ${suggestion}`));
   }
   return lines.join('\n');
+}
+
+function parseBusinessContextList(value: string) {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function businessContextToDraft(context: BusinessContext | null): BusinessContextDraft {
+  if (!context) return { ...emptyBusinessContextDraft };
+  return {
+    servicesText: context.services.join('\n'),
+    target_customers: context.target_customers ?? '',
+    brand_voice: context.brand_voice ?? '',
+    differentiatorsText: context.differentiators.join('\n'),
+    service_area: context.service_area ?? '',
+    notes: context.notes ?? '',
+  };
+}
+
+function businessContextDraftToPayload(draft: BusinessContextDraft): BusinessContextPayload {
+  return {
+    services: parseBusinessContextList(draft.servicesText),
+    target_customers: draft.target_customers.trim() || null,
+    brand_voice: draft.brand_voice.trim() || null,
+    differentiators: parseBusinessContextList(draft.differentiatorsText),
+    service_area: draft.service_area.trim() || null,
+    notes: draft.notes.trim() || null,
+  };
+}
+
+function visibilityToolTypeForPost(toolId: VisibilityToolId): SavedGeneratedPostFilter | null {
+  if (toolId === 'local-reach-post') return 'reach';
+  if (toolId === 'review-request') return 'review';
+  if (toolId === 'business-intro-post') return 'intro';
+  return null;
+}
+
+function visibilityPlatformForPost(toolId: VisibilityToolId, formData: VisibilityToolFormData) {
+  if (toolId === 'local-reach-post') return formData.destination;
+  if (toolId === 'review-request') return 'Review Request';
+  if (toolId === 'business-intro-post') return 'General Social Post';
+  return null;
+}
+
+function visibilityGeneratedPostTitle(toolId: VisibilityToolId, formData: VisibilityToolFormData) {
+  if (toolId === 'local-reach-post') {
+    return `${formData.destination} - ${formData.postType}`;
+  }
+  if (toolId === 'review-request') {
+    return formData.customerName.trim() ? `Review request - ${formData.customerName.trim()}` : 'Review request';
+  }
+  if (toolId === 'business-intro-post') {
+    return formData.location.trim() ? `Business intro - ${formData.location.trim()}` : 'Business intro';
+  }
+  return 'Generated post';
+}
+
+function generatedPostToolLabel(toolType: string) {
+  if (toolType === 'reach') return 'Reach';
+  if (toolType === 'review') return 'Review';
+  if (toolType === 'intro') return 'Intro';
+  return toolType;
+}
+
+function formatGeneratedPostDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date);
 }
 
 function parseEditableProfileList(value: string) {
@@ -1078,6 +1393,30 @@ function storeBusinessProfile(profile: BusinessProfile) {
   window.localStorage.setItem(businessProfileStorageKey, JSON.stringify(profile));
 }
 
+function loadStoredActiveBusinessId() {
+  if (typeof window === 'undefined') return '';
+
+  try {
+    return window.localStorage.getItem(activeBusinessIdStorageKey) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function storeActiveBusinessId(businessId: string) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    if (businessId) {
+      window.localStorage.setItem(activeBusinessIdStorageKey, businessId);
+    } else {
+      window.localStorage.removeItem(activeBusinessIdStorageKey);
+    }
+  } catch {
+    // Active business persistence is nice to have; current session state still works.
+  }
+}
+
 function normalizeStoredTheme(value: string | null): AppTheme | null {
   return value === 'light' || value === 'dark' ? value : null;
 }
@@ -1127,7 +1466,7 @@ function normalizeStoredPhotoAssetPayload(rawAsset: StoredPhotoAssetPayload | nu
   if (!rawAsset?.title || (!rawAsset.image_data && !rawAsset.image_url && !rawAsset.image_path)) return null;
   return {
     business_id: rawAsset.business_id?.trim() || null,
-    image_url: rawAsset.image_url?.trim() || null,
+    image_url: rawAsset.image_url?.trim() || rawAsset.image_path?.trim() || null,
     image_data: rawAsset.image_data || null,
     image_filename: rawAsset.image_filename?.trim() || null,
     title: rawAsset.title.trim(),
@@ -2231,6 +2570,16 @@ function App() {
   const [theme, setTheme] = useState<AppTheme>(() => loadStoredTheme());
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
   const [businessProfileDraft, setBusinessProfileDraft] = useState<BusinessProfile>(() => loadStoredBusinessProfile());
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [activeBusinessId, setActiveBusinessId] = useState(() => loadStoredActiveBusinessId());
+  const [loadingBusinesses, setLoadingBusinesses] = useState(true);
+  const [businessCreateDraft, setBusinessCreateDraft] = useState<BusinessCreateDraft>(defaultBusinessCreateDraft);
+  const [creatingBusiness, setCreatingBusiness] = useState(false);
+  const [activeBusinessContext, setActiveBusinessContext] = useState<BusinessContext | null>(null);
+  const [businessContextDraft, setBusinessContextDraft] = useState<BusinessContextDraft>(emptyBusinessContextDraft);
+  const [loadingBusinessContext, setLoadingBusinessContext] = useState(false);
+  const [savingBusinessContext, setSavingBusinessContext] = useState(false);
+  const [businessContextError, setBusinessContextError] = useState<string | null>(null);
   const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
   const [selectedVisibilityToolId, setSelectedVisibilityToolId] = useState<VisibilityToolId>('local-reach-post');
   const [visibilityToolFormData, setVisibilityToolFormData] = useState<VisibilityToolFormData>(() =>
@@ -2239,7 +2588,11 @@ function App() {
   const [visibilityToolOutput, setVisibilityToolOutput] = useState<VisibilityGenerationResponse | null>(null);
   const [visibilityToolError, setVisibilityToolError] = useState<string | null>(null);
   const [visibilityToolGenerating, setVisibilityToolGenerating] = useState(false);
+  const [visibilityToolSaving, setVisibilityToolSaving] = useState(false);
   const [visibilityToolCopied, setVisibilityToolCopied] = useState(false);
+  const [savedGeneratedPosts, setSavedGeneratedPosts] = useState<GeneratedPost[]>([]);
+  const [loadingSavedGeneratedPosts, setLoadingSavedGeneratedPosts] = useState(false);
+  const [savedGeneratedPostFilter, setSavedGeneratedPostFilter] = useState<SavedGeneratedPostFilter>('all');
   const [copiedPackageId, setCopiedPackageId] = useState<string | null>(null);
   const [scheduleInputs, setScheduleInputs] = useState<Record<string, string>>({});
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
@@ -2332,18 +2685,115 @@ function App() {
   }, [calendarWeekStartDate]);
 
   const loadPhotoAssets = useCallback(async () => {
+    if (!activeBusinessId) {
+      setPhotoAssets([]);
+      return;
+    }
+
     try {
-      setPhotoAssets(await getPhotoAssets(defaultPhotoAssetBusinessId));
+      const loadedAssets = await listBusinessPhotoAssets(activeBusinessId);
+      setPhotoAssets(loadedAssets.map(businessPhotoAssetToPhotoAsset));
     } catch (err) {
       setWarning(err instanceof Error ? `Photo Library metadata unavailable. ${err.message}` : 'Photo Library metadata unavailable.');
+    }
+  }, [activeBusinessId]);
+
+  const loadBusinesses = useCallback(async () => {
+    setLoadingBusinesses(true);
+    try {
+      const loadedBusinesses = await listBusinesses();
+      setBusinesses(loadedBusinesses);
+      setWarning((current) =>
+        current?.startsWith('Business persistence unavailable') ? null : current,
+      );
+      return loadedBusinesses;
+    } catch (err) {
+      setBusinesses([]);
+      setSavedGeneratedPosts([]);
+      setWarning(
+        err instanceof Error
+          ? `Business persistence unavailable. ${err.message}`
+          : 'Business persistence unavailable.',
+      );
+      return [];
+    } finally {
+      setLoadingBusinesses(false);
+    }
+  }, []);
+
+  const loadSavedGeneratedPosts = useCallback(async (businessId: string) => {
+    if (!businessId) {
+      setSavedGeneratedPosts([]);
+      return;
+    }
+
+    setLoadingSavedGeneratedPosts(true);
+    try {
+      setSavedGeneratedPosts(await listGeneratedPosts(businessId));
+    } catch (err) {
+      setSavedGeneratedPosts([]);
+      setWarning(err instanceof Error ? `Saved generated posts unavailable. ${err.message}` : 'Saved generated posts unavailable.');
+    } finally {
+      setLoadingSavedGeneratedPosts(false);
+    }
+  }, []);
+
+  const loadActiveBusinessContext = useCallback(async (businessId: string) => {
+    if (!businessId) {
+      setActiveBusinessContext(null);
+      setBusinessContextDraft({ ...emptyBusinessContextDraft });
+      setBusinessContextError(null);
+      return;
+    }
+
+    setLoadingBusinessContext(true);
+    setBusinessContextError(null);
+    try {
+      const context = await getBusinessContext(businessId);
+      setActiveBusinessContext(context);
+      setBusinessContextDraft(businessContextToDraft(context));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setActiveBusinessContext(null);
+        setBusinessContextDraft({ ...emptyBusinessContextDraft });
+      } else {
+        setActiveBusinessContext(null);
+        setBusinessContextDraft({ ...emptyBusinessContextDraft });
+        setBusinessContextError(err instanceof Error ? err.message : 'Unable to load business context.');
+      }
+    } finally {
+      setLoadingBusinessContext(false);
     }
   }, []);
 
   useEffect(() => {
+    void loadBusinesses();
     void loadCampaigns();
     void loadWeeklyQueue();
+  }, [loadBusinesses, loadCampaigns, loadWeeklyQueue]);
+
+  useEffect(() => {
+    if (activeBusinessId && businesses.some((business) => business.id === activeBusinessId)) return;
+    const firstBusinessId = businesses[0]?.id ?? '';
+    if (firstBusinessId !== activeBusinessId) {
+      setActiveBusinessId(firstBusinessId);
+    }
+  }, [activeBusinessId, businesses]);
+
+  useEffect(() => {
+    storeActiveBusinessId(activeBusinessId);
+    void loadSavedGeneratedPosts(activeBusinessId);
+    void loadActiveBusinessContext(activeBusinessId);
+  }, [activeBusinessId, loadActiveBusinessContext, loadSavedGeneratedPosts]);
+
+  useEffect(() => {
+    setVisibilityToolFormData((current) => ({
+      ...current,
+      photoAssetId: '',
+      selectedPhotoAssetIds: [],
+    }));
     void loadPhotoAssets();
-  }, [loadCampaigns, loadPhotoAssets, loadWeeklyQueue]);
+  }, [activeBusinessId, loadPhotoAssets]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2597,7 +3047,17 @@ function App() {
       return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets()]);
     }
     if (activeSection === 'visibility-tools') {
-      return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets()]);
+      return Promise.all([
+        loadCampaigns(),
+        loadWeeklyQueue(),
+        loadPhotoAssets(),
+        loadBusinesses(),
+        loadSavedGeneratedPosts(activeBusinessId),
+        loadActiveBusinessContext(activeBusinessId),
+      ]);
+    }
+    if (activeSection === 'business-profile') {
+      return Promise.all([loadBusinesses(), loadActiveBusinessContext(activeBusinessId)]);
     }
     if (activeSection === 'photo-library') {
       return loadPhotoAssets();
@@ -2654,6 +3114,8 @@ function App() {
                 : 'craigslist_service_ad',
         destination: visibilityToolFormData.destination,
         postType: visibilityToolFormData.postType,
+        activeBusiness,
+        businessContext: activeBusinessContext,
         businessProfile,
         serviceFocus: visibilityToolFormData.serviceFocus,
         location: visibilityToolFormData.location,
@@ -2680,6 +3142,8 @@ function App() {
         selectedVisibilityToolId,
         visibilityToolFormData,
         businessProfile,
+        activeBusiness,
+        activeBusinessContext,
         selectedVisibilityToolId === 'craigslist-service-ad' ? selectedAssets[0] ?? null : selectedAsset,
       );
       setVisibilityToolOutput(fallbackVisibilityResponseFromText(generatedText));
@@ -2714,6 +3178,109 @@ function App() {
           ? `Unable to copy output. ${err.message}`
           : 'Unable to copy output. Check browser clipboard permissions and try again.',
       );
+    }
+  }
+
+  async function handleCreateBusiness() {
+    const name = businessCreateDraft.name.trim();
+    if (!name) {
+      setError('Business name is required.');
+      return;
+    }
+
+    setCreatingBusiness(true);
+    setError(null);
+    try {
+      const createdBusiness = await createBusiness({
+        name,
+        industry: businessCreateDraft.industry.trim() || null,
+        location: businessCreateDraft.location.trim() || null,
+      });
+      setBusinesses((current) => [createdBusiness, ...current.filter((business) => business.id !== createdBusiness.id)]);
+      setActiveBusinessId(createdBusiness.id);
+      setBusinessCreateDraft(defaultBusinessCreateDraft);
+      setWarning(`Active business set to ${createdBusiness.name}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create business.');
+    } finally {
+      setCreatingBusiness(false);
+    }
+  }
+
+  async function handleSaveBusinessContext() {
+    if (!activeBusinessId) {
+      setBusinessContextError('Select or create an active business before saving context.');
+      return;
+    }
+
+    setSavingBusinessContext(true);
+    setBusinessContextError(null);
+    try {
+      const savedContext = await upsertBusinessContext(
+        activeBusinessId,
+        businessContextDraftToPayload(businessContextDraft),
+      );
+      setActiveBusinessContext(savedContext);
+      setBusinessContextDraft(businessContextToDraft(savedContext));
+      setWarning(`Business context saved for ${activeBusiness?.name ?? 'active business'}.`);
+    } catch (err) {
+      setBusinessContextError(err instanceof Error ? err.message : 'Unable to save business context.');
+    } finally {
+      setSavingBusinessContext(false);
+    }
+  }
+
+  async function handleSaveVisibilityToolOutput() {
+    const toolType = visibilityToolTypeForPost(selectedVisibilityToolId);
+    if (!toolType) {
+      setVisibilityToolError('Only Reach, Review, and Intro outputs can be saved in this step.');
+      return;
+    }
+    if (!activeBusinessId) {
+      setVisibilityToolError('Select or create an active business before saving generated posts.');
+      return;
+    }
+
+    const content = visibilityToolOutput?.primary?.trim() || formatVisibilityResponseForCopy(visibilityToolOutput).trim();
+    if (!content) {
+      setVisibilityToolError('Generate an output before saving.');
+      return;
+    }
+
+    const selectedAsset =
+      photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+    const selectedAssets = photoAssets.filter((asset) =>
+      visibilityToolFormData.selectedPhotoAssetIds.includes(asset.id),
+    );
+    const payload: GeneratedPostPayload = {
+      tool_type: toolType,
+      platform: visibilityPlatformForPost(selectedVisibilityToolId, visibilityToolFormData),
+      title: visibilityGeneratedPostTitle(selectedVisibilityToolId, visibilityToolFormData),
+      content,
+      status: 'saved',
+      metadata: {
+        source: 'visibility-tools',
+        selected_tool_id: selectedVisibilityToolId,
+        form_inputs: visibilityToolFormData,
+        output: visibilityToolOutput,
+        active_business: activeBusiness,
+        business_profile: businessProfile,
+        business_context: activeBusinessContext,
+        photo_asset: selectedAsset ? photoAssetToVisibilityMetadata(selectedAsset) : null,
+        photo_assets: selectedAssets.map(photoAssetToVisibilityMetadata),
+      },
+    };
+
+    setVisibilityToolSaving(true);
+    setVisibilityToolError(null);
+    try {
+      const savedPost = await createGeneratedPost(activeBusinessId, payload);
+      setSavedGeneratedPosts((current) => [savedPost, ...current.filter((post) => post.id !== savedPost.id)]);
+      setWarning(`Saved ${generatedPostToolLabel(savedPost.tool_type)} post to ${activeBusiness?.name ?? 'active business'}.`);
+    } catch (err) {
+      setVisibilityToolError(err instanceof Error ? `Unable to save generated post. ${err.message}` : 'Unable to save generated post.');
+    } finally {
+      setVisibilityToolSaving(false);
     }
   }
 
@@ -3831,6 +4398,11 @@ function App() {
   const selectedVisibilityTool = getVisibilityToolById(selectedVisibilityToolId) ?? getVisibilityToolById('local-reach-post');
   const selectedVisibilityPhotoAsset =
     photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+  const activeBusiness = businesses.find((business) => business.id === activeBusinessId) ?? null;
+  const filteredSavedGeneratedPosts =
+    savedGeneratedPostFilter === 'all'
+      ? savedGeneratedPosts
+      : savedGeneratedPosts.filter((post) => post.tool_type === savedGeneratedPostFilter);
   const enabledVisibilityChannels = visibilityChannelsFromProfile(businessProfile);
   const enabledLocalReachDestinations = enabledVisibilityChannels.map(destinationFromVisibilityChannel);
   const visibleVisibilityToolCards = visibilityToolCards.filter(
@@ -3939,6 +4511,18 @@ function App() {
         </section>
       ) : null}
 
+      <BusinessSelector
+        activeBusiness={activeBusiness}
+        activeBusinessId={activeBusinessId}
+        businesses={businesses}
+        creating={creatingBusiness}
+        draft={businessCreateDraft}
+        loading={loadingBusinesses}
+        onCreate={() => void handleCreateBusiness()}
+        onDraftChange={setBusinessCreateDraft}
+        onSelect={setActiveBusinessId}
+      />
+
       {activeSection === 'visibility-tools' ? (
         <section className="panel visibility-tools-panel">
           <div className="panel-heading weekly-heading">
@@ -3975,6 +4559,7 @@ function App() {
               error={visibilityToolError}
               formData={visibilityToolFormData}
               generating={visibilityToolGenerating}
+              saving={visibilityToolSaving}
               output={visibilityToolOutput}
               photoAssets={photoAssets}
               photoAsset={selectedVisibilityPhotoAsset}
@@ -3985,6 +4570,7 @@ function App() {
               onChange={updateVisibilityToolFormData}
               onCopy={() => void handleCopyVisibilityToolOutput()}
               onGenerate={() => void handleGenerateVisibilityTool()}
+              onSave={() => void handleSaveVisibilityToolOutput()}
               onOutputChange={(output) => {
                 setVisibilityToolCopied(false);
                 setVisibilityToolOutput((current) => ({
@@ -3994,6 +4580,14 @@ function App() {
               }}
             />
           ) : null}
+          <SavedGeneratedPostsSection
+            activeBusiness={activeBusiness}
+            filter={savedGeneratedPostFilter}
+            loading={loadingSavedGeneratedPosts}
+            posts={filteredSavedGeneratedPosts}
+            totalCount={savedGeneratedPosts.length}
+            onFilterChange={setSavedGeneratedPostFilter}
+          />
         </section>
       ) : null}
 
@@ -4224,19 +4818,33 @@ function App() {
       ) : null}
 
       {activeSection === 'business-profile' ? (
-        <BusinessProfileSection
-          profile={businessProfile}
-          draft={businessProfileDraft}
-          onCancel={handleCancelBusinessProfileEdits}
-          onChange={setBusinessProfileDraft}
-          onReset={handleResetBusinessProfile}
-          onSave={handleSaveBusinessProfile}
-        />
+        <>
+          <BusinessProfileSection
+            profile={businessProfile}
+            draft={businessProfileDraft}
+            onCancel={handleCancelBusinessProfileEdits}
+            onChange={setBusinessProfileDraft}
+            onReset={handleResetBusinessProfile}
+            onSave={handleSaveBusinessProfile}
+          />
+          <BusinessContextSection
+            activeBusiness={activeBusiness}
+            draft={businessContextDraft}
+            error={businessContextError}
+            loading={loadingBusinessContext}
+            saving={savingBusinessContext}
+            savedContext={activeBusinessContext}
+            onChange={setBusinessContextDraft}
+            onReload={() => void loadActiveBusinessContext(activeBusinessId)}
+            onSave={() => void handleSaveBusinessContext()}
+          />
+        </>
       ) : null}
 
       {activeSection === 'photo-library' ? (
         <PhotoLibrarySection
-          businessName={businessProfile.business_name}
+          businessId={activeBusinessId}
+          businessName={activeBusiness?.name ?? businessProfile.business_name}
           serviceOptions={businessProfile.services_offered}
           onAssetsChange={setPhotoAssets}
         />
@@ -5038,6 +5646,138 @@ function BusinessProfileSection({
   );
 }
 
+function BusinessContextSection({
+  activeBusiness,
+  draft,
+  error,
+  loading,
+  saving,
+  savedContext,
+  onChange,
+  onReload,
+  onSave,
+}: {
+  activeBusiness: Business | null;
+  draft: BusinessContextDraft;
+  error: string | null;
+  loading: boolean;
+  saving: boolean;
+  savedContext: BusinessContext | null;
+  onChange: (draft: BusinessContextDraft) => void;
+  onReload: () => void;
+  onSave: () => void;
+}) {
+  const disabled = !activeBusiness || loading || saving;
+  const updateField = <Key extends keyof BusinessContextDraft>(field: Key, value: BusinessContextDraft[Key]) => {
+    onChange({ ...draft, [field]: value });
+  };
+
+  return (
+    <section className="panel business-context-panel">
+      <div className="panel-heading weekly-heading">
+        <div>
+          <h2>Business Context</h2>
+          <p>
+            {activeBusiness
+              ? `Memory for ${activeBusiness.name}.`
+              : 'Select or create an active business before editing context.'}
+          </p>
+        </div>
+        <div className="panel-heading-actions">
+          {loading ? <span className="loading-label">Loading</span> : null}
+          <button className="secondary-button" disabled={!activeBusiness || loading || saving} type="button" onClick={onReload}>
+            Reload
+          </button>
+          <button disabled={disabled} type="button" onClick={onSave}>
+            {saving ? 'Saving...' : 'Save Context'}
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="photo-library-alert" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      {!activeBusiness ? (
+        <div className="photo-library-empty">
+          <strong>No active business selected.</strong>
+          <span>Create or select a business above to load and save context.</span>
+        </div>
+      ) : (
+        <div className="business-context-layout">
+          <div className="business-context-summary">
+            <span>Saved Context</span>
+            <strong>{savedContext ? 'Stored for this business' : 'No saved context yet'}</strong>
+            {savedContext?.services.length ? <p>Services: {savedContext.services.join(', ')}</p> : null}
+            {savedContext?.service_area ? <p>Service area: {savedContext.service_area}</p> : null}
+            {savedContext?.brand_voice ? <p>Voice: {savedContext.brand_voice}</p> : null}
+          </div>
+          <form
+            className="business-context-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!disabled) onSave();
+            }}
+          >
+            <label className="form-field form-field-wide">
+              <span>Services</span>
+              <textarea
+                disabled={disabled}
+                placeholder="One service per line"
+                value={draft.servicesText}
+                onChange={(event) => updateField('servicesText', event.target.value)}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Target customers</span>
+              <textarea
+                disabled={disabled}
+                value={draft.target_customers}
+                onChange={(event) => updateField('target_customers', event.target.value)}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Brand voice</span>
+              <textarea
+                disabled={disabled}
+                value={draft.brand_voice}
+                onChange={(event) => updateField('brand_voice', event.target.value)}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Differentiators</span>
+              <textarea
+                disabled={disabled}
+                placeholder="One differentiator per line"
+                value={draft.differentiatorsText}
+                onChange={(event) => updateField('differentiatorsText', event.target.value)}
+              />
+            </label>
+            <label className="form-field">
+              <span>Service area</span>
+              <input
+                disabled={disabled}
+                value={draft.service_area}
+                onChange={(event) => updateField('service_area', event.target.value)}
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Notes</span>
+              <textarea
+                disabled={disabled}
+                value={draft.notes}
+                onChange={(event) => updateField('notes', event.target.value)}
+              />
+            </label>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SettingsSection({
   theme,
   onThemeChange,
@@ -5074,15 +5814,16 @@ function SettingsSection({
 }
 
 function PhotoLibrarySection({
+  businessId,
   businessName,
   onAssetsChange,
   serviceOptions,
 }: {
+  businessId: string;
   businessName: string;
   onAssetsChange?: (assets: PhotoAsset[]) => void;
   serviceOptions: string[];
 }) {
-  const businessId = defaultPhotoAssetBusinessId;
   const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
   const [photoDraft, setPhotoDraft] = useState<PhotoAssetDraft>(() => createEmptyPhotoAssetDraft());
   const [showPhotoAssetModal, setShowPhotoAssetModal] = useState(false);
@@ -5096,11 +5837,20 @@ function PhotoLibrarySection({
   const photoAssetSavingRef = useRef(false);
 
   const loadBackendPhotoAssets = useCallback(async () => {
+    if (!businessId) {
+      setPhotoAssets([]);
+      onAssetsChange?.([]);
+      setLoadingPhotoAssets(false);
+      setPhotoAssetError(null);
+      return;
+    }
+
     setLoadingPhotoAssets(true);
     try {
-      const loadedAssets = await getPhotoAssets(businessId);
-      setPhotoAssets(loadedAssets);
-      onAssetsChange?.(loadedAssets);
+      const loadedAssets = await listBusinessPhotoAssets(businessId);
+      const normalizedAssets = loadedAssets.map(businessPhotoAssetToPhotoAsset);
+      setPhotoAssets(normalizedAssets);
+      onAssetsChange?.(normalizedAssets);
       setPhotoAssetError(null);
     } catch (err) {
       setPhotoAssetError(err instanceof Error ? err.message : 'Unable to load photo assets from the backend.');
@@ -5140,6 +5890,10 @@ function PhotoLibrarySection({
     photoAssetBusyAction === 'image' || photoAssetBusyAction === 'save' ? photoAssetBusyAction : null;
 
   function openAddPhotoModal() {
+    if (!businessId) {
+      setPhotoAssetError('Select or create an active business before adding photos.');
+      return;
+    }
     setPhotoDraft(createEmptyPhotoAssetDraft());
     setEditingPhotoAssetId(null);
     setShowPhotoAssetModal(true);
@@ -5148,6 +5902,10 @@ function PhotoLibrarySection({
   }
 
   function openEditPhotoModal(asset: PhotoAsset) {
+    if (!businessId) {
+      setPhotoAssetError('Select or create an active business before editing photos.');
+      return;
+    }
     setPhotoDraft(createPhotoAssetDraft(asset));
     setEditingPhotoAssetId(asset.id);
     setShowPhotoAssetModal(true);
@@ -5190,6 +5948,11 @@ function PhotoLibrarySection({
   async function handleSavePhotoAsset() {
     if (photoAssetSavingRef.current || photoAssetBusyAction === 'save') return;
 
+    if (!businessId) {
+      setPhotoAssetError('Select or create an active business before saving photos.');
+      return;
+    }
+
     const title = photoDraft.title.trim();
     if (!title) {
       setPhotoAssetError('Photo title is required.');
@@ -5201,27 +5964,23 @@ function PhotoLibrarySection({
     }
 
     const existingAsset = editingPhotoAsset;
-    const payload: PhotoAssetPayload = {
-      business_id: existingAsset?.business_id ?? businessId,
-      image_data: photoDraft.image_data,
-      image_url: photoDraft.image_url,
-      image_filename: photoDraft.image_filename,
+    const payload = photoAssetDraftToBusinessPhotoAssetPayload({
+      ...photoDraft,
       title,
       description: photoDraft.description.trim(),
-      category: photoDraft.category,
       service_type: photoDraft.service_type.trim(),
       location: photoDraft.location.trim(),
-      tags: normalizePhotoTags(photoDraft.tagsText),
-      quality: photoDraft.quality,
-    };
+    });
 
     setPhotoAssetBusyAction('save');
     setPhotoAssetError(null);
     photoAssetSavingRef.current = true;
     try {
-      const savedAsset = existingAsset
-        ? await updatePhotoAsset(existingAsset.id, payload)
-        : await createPhotoAsset(payload);
+      const savedBusinessAsset = await createBusinessPhotoAsset(businessId, payload);
+      const savedAsset = businessPhotoAssetToPhotoAsset(savedBusinessAsset);
+      if (existingAsset) {
+        await deleteBusinessPhotoAsset(businessId, existingAsset.id);
+      }
       setPhotoAssets((currentAssets) => {
         const nextAssets = existingAsset
           ? currentAssets.map((asset) => (asset.id === existingAsset.id ? savedAsset : asset))
@@ -5241,11 +6000,15 @@ function PhotoLibrarySection({
 
   async function handleConfirmDeletePhotoAsset() {
     if (!pendingDeletePhotoAsset) return;
+    if (!businessId) {
+      setPhotoAssetError('Select or create an active business before deleting photos.');
+      return;
+    }
 
     setPhotoAssetBusyAction('delete');
     setPhotoAssetError(null);
     try {
-      await deletePhotoAsset(pendingDeletePhotoAsset.id, pendingDeletePhotoAsset.business_id);
+      await deleteBusinessPhotoAsset(businessId, pendingDeletePhotoAsset.id);
       setPhotoAssets((currentAssets) => {
         const nextAssets = currentAssets.filter((asset) => asset.id !== pendingDeletePhotoAsset.id);
         onAssetsChange?.(nextAssets);
@@ -5261,6 +6024,11 @@ function PhotoLibrarySection({
   }
 
   async function handleImportStoredPhotoAssets() {
+    if (!businessId) {
+      setPhotoAssetError('Select or create an active business before importing local photos.');
+      return;
+    }
+
     const storedPayloads = loadStoredPhotoAssets();
     if (storedPayloads.length === 0) {
       setLocalPhotoImportCount(0);
@@ -5268,22 +6036,32 @@ function PhotoLibrarySection({
       return;
     }
 
-    const importablePayloads = storedPayloads
-      .filter((payload) => payload.image_data || payload.image_url)
-      .map((payload) => ({
-        ...payload,
-        business_id: payload.business_id || businessId,
-      }));
+    const existingImageReferences = new Set(
+      photoAssets
+        .map((asset) => normalizeImageReference(getPhotoAssetImageSource(asset)))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const importablePayloads = storedPayloads.filter((payload) => {
+      const imageSource = payload.image_data || payload.image_url;
+      if (!imageSource) return false;
+      const imageReference = normalizeImageReference(imageSource);
+      return !imageReference || !existingImageReferences.has(imageReference);
+    });
 
     if (importablePayloads.length === 0) {
-      setPhotoAssetError('Local Photo Library assets did not include importable image data.');
+      setPhotoAssetNotice('No importable local photos remain for this active business.');
       return;
     }
 
     setPhotoAssetBusyAction('import');
     setPhotoAssetError(null);
     try {
-      const importedAssets = await Promise.all(importablePayloads.map((payload) => createPhotoAsset(payload)));
+      const importedBusinessAssets = await Promise.all(
+        importablePayloads.map((payload) =>
+          createBusinessPhotoAsset(businessId, photoAssetPayloadToBusinessPhotoAssetPayload(payload)),
+        ),
+      );
+      const importedAssets = importedBusinessAssets.map(businessPhotoAssetToPhotoAsset);
       setPhotoAssets((currentAssets) => {
         const nextAssets = [...importedAssets, ...currentAssets];
         onAssetsChange?.(nextAssets);
@@ -5309,20 +6087,24 @@ function PhotoLibrarySection({
       <div className="panel-heading weekly-heading">
         <div>
           <h2>Photo Library</h2>
-          <p>Reusable {businessName || 'business'} project photos for content planning and weekly generation.</p>
+          <p>
+            {businessId
+              ? `Reusable ${businessName || 'business'} project photos for content planning and weekly generation.`
+              : 'Select or create an active business before adding Photo Library metadata.'}
+          </p>
         </div>
         <div className="panel-heading-actions">
           {localPhotoImportCount > 0 ? (
             <button
               className="secondary-button"
-              disabled={photoAssetBusyAction !== null}
+              disabled={photoAssetBusyAction !== null || !businessId}
               type="button"
               onClick={() => void handleImportStoredPhotoAssets()}
             >
               {photoAssetBusyAction === 'import' ? 'Importing...' : `Import ${localPhotoImportCount} Local`}
             </button>
           ) : null}
-          <button className="secondary-button" type="button" onClick={openAddPhotoModal}>
+          <button className="secondary-button" disabled={!businessId} type="button" onClick={openAddPhotoModal}>
             Add Photo
           </button>
         </div>
@@ -5335,7 +6117,12 @@ function PhotoLibrarySection({
       ) : null}
       {photoAssetNotice ? <div className="photo-library-notice">{photoAssetNotice}</div> : null}
 
-      {loadingPhotoAssets ? (
+      {!businessId ? (
+        <div className="photo-library-empty">
+          <strong>No active business selected.</strong>
+          <span>Create or select a business above to load, import, add, or delete business-scoped photos.</span>
+        </div>
+      ) : loadingPhotoAssets ? (
         <div className="photo-library-empty">
           <strong>Loading backend photo assets...</strong>
           <span>Gomez Ops is reading the saved Photo Library for {businessName || 'this business'}.</span>
@@ -5533,8 +6320,21 @@ function PhotoAssetForm({
               ? 'Preparing image preview...'
               : editing
                 ? 'Current image is retained unless a new file is selected.'
-                : 'Upload a project photo to save it in the backend Photo Library.'}
+                : 'File uploads are saved as metadata previews until Supabase Storage is wired.'}
           </small>
+        </label>
+        <label className="form-field">
+          <span>Image URL</span>
+          <input
+            placeholder="https://..."
+            value={draft.image_url ?? ''}
+            onChange={(event) => {
+              onChange('image_url', event.target.value || null);
+              onChange('image_data', null);
+              onChange('image_path', null);
+            }}
+          />
+          <small>Use a public URL for durable production photos.</small>
         </label>
       </div>
       <div className="photo-asset-fields">
@@ -5804,11 +6604,158 @@ function StandardModal({
   return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
 }
 
+function BusinessSelector({
+  activeBusiness,
+  activeBusinessId,
+  businesses,
+  creating,
+  draft,
+  loading,
+  onCreate,
+  onDraftChange,
+  onSelect,
+}: {
+  activeBusiness: Business | null;
+  activeBusinessId: string;
+  businesses: Business[];
+  creating: boolean;
+  draft: BusinessCreateDraft;
+  loading: boolean;
+  onCreate: () => void;
+  onDraftChange: (draft: BusinessCreateDraft) => void;
+  onSelect: (businessId: string) => void;
+}) {
+  return (
+    <section className="business-selector-bar" aria-label="Active business">
+      <div className="business-selector-current">
+        <span>Active business</span>
+        <strong>{activeBusiness?.name ?? (loading ? 'Loading...' : 'None selected')}</strong>
+        {activeBusiness ? (
+          <small>{[activeBusiness.industry, activeBusiness.location].filter(Boolean).join(' / ') || 'Business scoped'}</small>
+        ) : (
+          <small>Saved generated posts require a business.</small>
+        )}
+      </div>
+      <label className="form-field business-selector-select">
+        <span>Switch business</span>
+        <select
+          disabled={loading || businesses.length === 0}
+          value={activeBusinessId}
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          <option value="">No business selected</option>
+          {businesses.map((business) => (
+            <option key={business.id} value={business.id}>
+              {business.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="business-create-fields">
+        <label className="form-field">
+          <span>Name</span>
+          <input
+            placeholder="Business name"
+            value={draft.name}
+            onChange={(event) => onDraftChange({ ...draft, name: event.target.value })}
+          />
+        </label>
+        <label className="form-field">
+          <span>Industry</span>
+          <input
+            placeholder="Painting"
+            value={draft.industry}
+            onChange={(event) => onDraftChange({ ...draft, industry: event.target.value })}
+          />
+        </label>
+        <label className="form-field">
+          <span>Location</span>
+          <input
+            placeholder="Chicago, IL"
+            value={draft.location}
+            onChange={(event) => onDraftChange({ ...draft, location: event.target.value })}
+          />
+        </label>
+        <button disabled={creating || !draft.name.trim()} type="button" onClick={onCreate}>
+          {creating ? 'Creating...' : 'Create'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SavedGeneratedPostsSection({
+  activeBusiness,
+  filter,
+  loading,
+  posts,
+  totalCount,
+  onFilterChange,
+}: {
+  activeBusiness: Business | null;
+  filter: SavedGeneratedPostFilter;
+  loading: boolean;
+  posts: GeneratedPost[];
+  totalCount: number;
+  onFilterChange: (filter: SavedGeneratedPostFilter) => void;
+}) {
+  const filters: SavedGeneratedPostFilter[] = ['all', 'reach', 'review', 'intro'];
+
+  return (
+    <section className="saved-posts-section" aria-labelledby="saved-posts-title">
+      <div className="saved-posts-heading">
+        <div>
+          <h3 id="saved-posts-title">Saved Generated Posts</h3>
+          <p>{activeBusiness ? activeBusiness.name : 'Select a business to load saved posts.'}</p>
+        </div>
+        {loading ? <span className="loading-label">Loading</span> : null}
+      </div>
+      <div className="saved-post-filter-row" role="group" aria-label="Filter saved posts">
+        {filters.map((option) => (
+          <button
+            className={filter === option ? 'secondary-button saved-post-filter-active' : 'secondary-button'}
+            key={option}
+            type="button"
+            onClick={() => onFilterChange(option)}
+          >
+            {option === 'all' ? `All (${totalCount})` : generatedPostToolLabel(option)}
+          </button>
+        ))}
+      </div>
+      {posts.length > 0 ? (
+        <div className="saved-post-list">
+          {posts.map((post) => (
+            <article className="saved-post-item" key={post.id}>
+              <div className="saved-post-item-heading">
+                <div>
+                  <span>{generatedPostToolLabel(post.tool_type)}</span>
+                  <h4>{post.title || 'Untitled saved post'}</h4>
+                </div>
+                <small>{formatGeneratedPostDate(post.created_at)}</small>
+              </div>
+              <div className="saved-post-meta">
+                {post.platform ? <span>{post.platform}</span> : null}
+                <span>{post.status}</span>
+              </div>
+              <p>{post.content}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-cell">
+          {activeBusiness ? 'No saved posts for this filter yet.' : 'No active business selected.'}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function VisibilityToolModal({
   copied,
   error,
   formData,
   generating,
+  saving,
   output,
   photoAssets,
   photoAsset,
@@ -5819,12 +6766,14 @@ function VisibilityToolModal({
   onChange,
   onCopy,
   onGenerate,
+  onSave,
   onOutputChange,
 }: {
   copied: boolean;
   error: string | null;
   formData: VisibilityToolFormData;
   generating: boolean;
+  saving: boolean;
   output: VisibilityGenerationResponse | null;
   photoAssets: PhotoAsset[];
   photoAsset: PhotoAsset | null;
@@ -5835,6 +6784,7 @@ function VisibilityToolModal({
   onChange: (field: keyof VisibilityToolFormData, value: string | string[]) => void;
   onCopy: () => void;
   onGenerate: () => void;
+  onSave: () => void;
   onOutputChange: (output: string) => void;
 }) {
   const serviceOptions = profile.services_offered.filter((service) => service.trim());
@@ -5846,6 +6796,7 @@ function VisibilityToolModal({
     ? [photoAsset.title, photoAsset.service_type, photoAsset.location].filter(Boolean).join(' - ')
     : '';
   const localReachDestinations = enabledDestinations.length > 0 ? enabledDestinations : localReachDestinationOptions;
+  const supportsSaving = Boolean(visibilityToolTypeForPost(tool.id));
 
   return (
     <section className="visibility-tool-workbench" aria-labelledby="visibility-tool-title">
@@ -6186,6 +7137,15 @@ function VisibilityToolModal({
           <button type="button" onClick={onCancel}>
             Reset
           </button>
+          {supportsSaving ? (
+            <button
+              disabled={generating || saving || !formatVisibilityResponseForCopy(output).trim()}
+              type="button"
+              onClick={onSave}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          ) : null}
           <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
             {generating ? 'Generating...' : 'Generate'}
           </button>

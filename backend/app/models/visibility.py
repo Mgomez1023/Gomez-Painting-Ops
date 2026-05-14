@@ -37,10 +37,36 @@ class VisibilityPhotoAssetMetadata(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
 
+class VisibilityActiveBusiness(BaseModel):
+    id: str | None = None
+    name: str = ""
+    industry: str | None = None
+    location: str | None = None
+    website_url: str | None = None
+    phone: str | None = None
+    email: str | None = None
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class VisibilityBusinessContext(BaseModel):
+    business_id: str | None = None
+    services: list[str] = Field(default_factory=list)
+    target_customers: str | None = None
+    brand_voice: str | None = None
+    differentiators: list[str] = Field(default_factory=list)
+    service_area: str | None = None
+    notes: str | None = None
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
 class VisibilityGenerationRequest(BaseModel):
     tool_type: VisibilityToolType = Field(..., alias="toolType")
     destination: VisibilityDestination | None = None
     post_type: str | None = Field(default=None, alias="postType")
+    active_business: VisibilityActiveBusiness | None = Field(default=None, alias="activeBusiness")
+    business_context: VisibilityBusinessContext | None = Field(default=None, alias="businessContext")
     business_profile: BusinessProfileInput | None = Field(default=None, alias="businessProfile")
     service_focus: str = Field(default="", alias="serviceFocus")
     location: str = ""

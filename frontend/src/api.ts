@@ -16,6 +16,13 @@ import type {
   VisibilityGenerationRequest,
   VisibilityGenerationResponse,
   WeeklySocialQueueGenerateRequest,
+  Business,
+  BusinessContext,
+  BusinessContextPayload,
+  BusinessPayload,
+  BusinessPhotoAsset,
+  GeneratedPost,
+  GeneratedPostPayload,
 } from './types';
 
 const API_BASE_URL =
@@ -184,6 +191,86 @@ export function generateVisibilityContent(
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export function listBusinesses(): Promise<Business[]> {
+  return request<Business[]>('/businesses');
+}
+
+export function createBusiness(payload: BusinessPayload): Promise<Business> {
+  return request<Business>('/businesses', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateBusiness(businessId: string, payload: Partial<BusinessPayload>): Promise<Business> {
+  return request<Business>(`/businesses/${encodeURIComponent(businessId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getBusinessContext(businessId: string): Promise<BusinessContext> {
+  return request<BusinessContext>(`/businesses/${encodeURIComponent(businessId)}/context`);
+}
+
+export function upsertBusinessContext(
+  businessId: string,
+  payload: BusinessContextPayload,
+): Promise<BusinessContext> {
+  return request<BusinessContext>(`/businesses/${encodeURIComponent(businessId)}/context`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listBusinessPhotoAssets(businessId: string): Promise<BusinessPhotoAsset[]> {
+  return request<BusinessPhotoAsset[]>(`/businesses/${encodeURIComponent(businessId)}/photos`);
+}
+
+export function createBusinessPhotoAsset(
+  businessId: string,
+  payload: Omit<BusinessPhotoAsset, 'id' | 'business_id' | 'created_at' | 'updated_at'>,
+): Promise<BusinessPhotoAsset> {
+  return request<BusinessPhotoAsset>(`/businesses/${encodeURIComponent(businessId)}/photos`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteBusinessPhotoAsset(businessId: string, photoAssetId: string): Promise<BusinessPhotoAsset> {
+  return request<BusinessPhotoAsset>(
+    `/businesses/${encodeURIComponent(businessId)}/photos/${encodeURIComponent(photoAssetId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export function listGeneratedPosts(businessId: string): Promise<GeneratedPost[]> {
+  return request<GeneratedPost[]>(`/businesses/${encodeURIComponent(businessId)}/generated-posts`);
+}
+
+export function createGeneratedPost(businessId: string, payload: GeneratedPostPayload): Promise<GeneratedPost> {
+  return request<GeneratedPost>(`/businesses/${encodeURIComponent(businessId)}/generated-posts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateGeneratedPost(
+  businessId: string,
+  generatedPostId: string,
+  payload: Partial<GeneratedPostPayload>,
+): Promise<GeneratedPost> {
+  return request<GeneratedPost>(
+    `/businesses/${encodeURIComponent(businessId)}/generated-posts/${encodeURIComponent(generatedPostId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function approveCampaignContent(contentId: string): Promise<CampaignContentQueueItem> {

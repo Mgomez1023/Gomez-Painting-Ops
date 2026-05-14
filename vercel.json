@@ -20,6 +20,10 @@
       "destination": "/api/index.py"
     },
     {
+      "source": "/businesses/:path*",
+      "destination": "/api/index.py"
+    },
+    {
       "source": "/content/:path*",
       "destination": "/api/index.py"
     },

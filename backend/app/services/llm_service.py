@@ -72,11 +72,34 @@ class LLMService:
 
     def generate_visibility_fallback(self, request: VisibilityGenerationRequest) -> VisibilityGenerationResponse:
         profile = request.business_profile
-        business_name = (profile.business_name if profile else "Marom Painting").strip() or "Marom Painting"
-        website = (profile.website_url if profile and profile.website_url else "").strip()
+        active_business = request.active_business
+        business_context = request.business_context
+        business_name = (
+            (active_business.name if active_business and active_business.name else "")
+            or (profile.business_name if profile else "")
+            or "Marom Painting"
+        ).strip()
+        website = (
+            (active_business.website_url if active_business and active_business.website_url else "")
+            or (profile.website_url if profile and profile.website_url else "")
+        ).strip()
         primary_cta = (profile.primary_cta if profile and profile.primary_cta else "Request a free estimate").strip()
-        service = request.service_focus or self._first_non_empty(profile.services_offered if profile else [], "painting services")
-        location = request.location or self._first_non_empty(profile.service_area_cities if profile else [], "the local area")
+        service = (
+            request.service_focus
+            or self._first_non_empty(business_context.services if business_context else [], "")
+            or self._first_non_empty(profile.services_offered if profile else [], "painting services")
+        )
+        location = (
+            request.location
+            or (business_context.service_area if business_context and business_context.service_area else "")
+            or (active_business.location if active_business and active_business.location else "")
+            or self._first_non_empty(profile.service_area_cities if profile else [], "the local area")
+        )
+        industry = (
+            (active_business.industry if active_business and active_business.industry else "")
+            or (profile.industry if profile and profile.industry else "")
+            or "home services"
+        )
         cta_line = self._visibility_cta_line(request.cta or primary_cta, website, request.contact)
 
         if request.tool_type == "craigslist_service_ad":
@@ -92,10 +115,19 @@ class LLMService:
             customer_name = request.customer_name or "there"
             job_completed = request.job_completed or service
             review_link = request.review_link or website
+            target_customers = (
+                business_context.target_customers
+                if business_context and business_context.target_customers
+                else "local homeowners"
+            )
+            differentiator = self._first_non_empty(
+                business_context.differentiators if business_context else [],
+                "feel confident reaching out",
+            )
             primary = (
                 f"Hi {customer_name}, thank you again for choosing {business_name} for {job_completed}. "
                 "If you have a minute, would you be willing to leave us a Google review? "
-                "It helps local homeowners feel confident reaching out."
+                f"It helps {target_customers.lower()} find a team known for {differentiator.lower()}."
             )
             if review_link:
                 primary = f"{primary} {review_link}"
@@ -109,11 +141,25 @@ class LLMService:
             )
 
         if request.tool_type == "business_intro_post":
-            services = request.services_to_mention or ", ".join((profile.services_offered if profile else [])[:3]) or service
-            background = request.business_background or (profile.brand_tone if profile and profile.brand_tone else "Local, reliable, and focused on clean work")
+            services = (
+                request.services_to_mention
+                or ", ".join((business_context.services if business_context else [])[:3])
+                or ", ".join((profile.services_offered if profile else [])[:3])
+                or service
+            )
+            background = (
+                request.business_background
+                or (business_context.notes if business_context and business_context.notes else "")
+                or (business_context.brand_voice if business_context and business_context.brand_voice else "")
+                or (profile.brand_tone if profile and profile.brand_tone else "Local, reliable, and focused on clean work")
+            )
+            differentiator_line = ""
+            if business_context and business_context.differentiators:
+                differentiator_line = f" What makes us different: {' and '.join(business_context.differentiators[:2])}."
             primary = (
-                f"Hey neighbors - we are {business_name}, a local {profile.industry.lower() if profile and profile.industry else 'home services'} "
+                f"Hey neighbors - we are {business_name}, a local {industry.lower()} "
                 f"business serving {location}. We help with {services}. {background}. "
+                f"{differentiator_line}"
                 f"If you are planning a project nearby, {cta_line}."
             )
             return VisibilityGenerationResponse(
@@ -131,6 +177,7 @@ class LLMService:
             service=service,
             location=location,
             cta_line=cta_line,
+            context_line=self._visibility_context_line(profile, business_context),
         )
 
     def _generate_placeholder_content_draft(self, job: CompletedJob) -> ContentDraft:
@@ -214,6 +261,7 @@ class LLMService:
         service: str,
         location: str,
         cta_line: str,
+        context_line: str = "",
     ) -> VisibilityGenerationResponse:
         destination = request.destination or "General Social Post"
         post_type = request.post_type or "Service promotion"
@@ -226,22 +274,22 @@ class LLMService:
         if destination == "Google Business Profile":
             body = (
                 f"{business_name} helps homeowners in {location} with {service.lower()} and related painting needs. "
-                "Expect clear estimates, careful prep, and clean work."
+                f"{context_line or 'Expect clear estimates, careful prep, and clean work.'}"
             )
         elif destination in {"Facebook Group", "Neighborhood Group"}:
             body = (
                 f"No hard sell - just local help from {business_name} if anyone nearby is thinking about "
-                f"{service.lower()}. Happy to answer questions or take a look."
+                f"{service.lower()}. {context_line or 'Happy to answer questions or take a look.'}"
             )
         elif destination == "Craigslist":
             body = (
                 f"{business_name} offers reliable {service.lower()} in {location}. Clear estimates, clean work areas, "
-                "and service for local homeowners."
+                f"and service for local homeowners. {context_line}"
             )
         else:
             body = (
                 f"{business_name} works with local homeowners around {location} on {service.lower()}. "
-                "The focus is simple communication, careful prep, and a finish that fits the home."
+                f"{context_line or 'The focus is simple communication, careful prep, and a finish that fits the home.'}"
             )
 
         if goal == "Improve local search visibility" and destination == "Google Business Profile":
@@ -324,6 +372,29 @@ class LLMService:
             if value.strip():
                 return value.strip()
         return fallback
+
+    @staticmethod
+    def _visibility_context_line(profile: object | None, business_context: object | None) -> str:
+        differentiators = [
+            item.strip()
+            for item in getattr(business_context, "differentiators", []) or []
+            if item.strip()
+        ]
+        target_customers = (getattr(business_context, "target_customers", None) or getattr(profile, "target_customer", "") or "").strip()
+        brand_voice = (getattr(business_context, "brand_voice", None) or getattr(profile, "brand_tone", "") or "").strip()
+        notes = (getattr(business_context, "notes", None) or "").strip()
+
+        if differentiators and target_customers:
+            return f"We work with {target_customers.lower()} and focus on {' and '.join(differentiators[:2]).lower()}."
+        if differentiators:
+            return f"We focus on {' and '.join(differentiators[:2]).lower()}."
+        if target_customers:
+            return f"We work with {target_customers.lower()} who want dependable, neat work."
+        if brand_voice:
+            return f"The tone is {brand_voice.lower()}, with clear communication throughout."
+        if notes:
+            return notes.rstrip(".") + "."
+        return ""
 
     @staticmethod
     def _visibility_cta_line(cta: str, website: str, contact: str = "") -> str:

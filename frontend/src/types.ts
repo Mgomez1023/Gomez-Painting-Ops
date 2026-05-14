@@ -148,6 +148,85 @@ export type BusinessProfile = {
   >;
 };
 
+export type Business = {
+  id: string;
+  owner_id: string;
+  name: string;
+  industry: string | null;
+  location: string | null;
+  website_url: string | null;
+  phone: string | null;
+  email: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BusinessPayload = {
+  name: string;
+  industry?: string | null;
+  location?: string | null;
+  website_url?: string | null;
+  phone?: string | null;
+  email?: string | null;
+};
+
+export type BusinessContext = {
+  business_id: string;
+  services: string[];
+  target_customers: string | null;
+  brand_voice: string | null;
+  differentiators: string[];
+  service_area: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BusinessContextPayload = {
+  services: string[];
+  target_customers?: string | null;
+  brand_voice?: string | null;
+  differentiators?: string[];
+  service_area?: string | null;
+  notes?: string | null;
+};
+
+export type BusinessPhotoAsset = {
+  id: string;
+  business_id: string;
+  storage_path: string;
+  public_url: string | null;
+  caption: string | null;
+  tags: string[];
+  job_type: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GeneratedPostToolType = 'reach' | 'review' | 'intro' | 'craigslist' | string;
+
+export type GeneratedPost = {
+  id: string;
+  business_id: string;
+  tool_type: GeneratedPostToolType;
+  platform: string | null;
+  title: string | null;
+  content: string;
+  metadata: Record<string, unknown>;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GeneratedPostPayload = {
+  tool_type: GeneratedPostToolType;
+  platform?: string | null;
+  title?: string | null;
+  content: string;
+  metadata?: Record<string, unknown>;
+  status?: string;
+};
+
 export type VisibilityGenerationMode = 'llm' | 'fallback';
 
 export type VisibilityPhotoAssetMetadata = {
@@ -168,6 +247,8 @@ export type VisibilityGenerationRequest = {
   toolType: 'local_reach_post' | 'review_request' | 'business_intro_post' | 'craigslist_service_ad';
   destination?: string | null;
   postType?: string | null;
+  activeBusiness?: Business | null;
+  businessContext?: BusinessContext | null;
   businessProfile?: BusinessProfile | null;
   serviceFocus?: string;
   location?: string;

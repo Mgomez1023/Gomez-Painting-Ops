@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.routes_businesses import router as businesses_router
 from app.api.routes_campaign_content_queue import router as campaign_content_queue_router
 from app.api.routes_campaigns import router as campaigns_router
 from app.api.routes_content import router as content_router
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(businesses_router)
     app.include_router(campaigns_router)
     app.include_router(campaign_content_queue_router)
     app.include_router(health_router)

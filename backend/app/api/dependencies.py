@@ -1,8 +1,10 @@
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
 
 from app.agents.content_agent import ContentAgent
 from app.agents.campaign_agent import CampaignAgent
+from app.config import settings
 from app.services.campaign_image_service import CampaignImageService
+from app.services.business_service import BusinessDataService
 from app.services.llm_service import LLMService
 from app.services.photo_asset_service import PhotoAssetService
 from app.services.publisher_service import PublisherService
@@ -21,6 +23,22 @@ async def get_campaign_image_service() -> CampaignImageService:
 
 async def get_photo_asset_service() -> PhotoAssetService:
     return PhotoAssetService()
+
+
+async def get_business_data_service() -> BusinessDataService:
+    return BusinessDataService()
+
+
+async def get_current_owner_id() -> str:
+    # Temporary Step 2 bridge: replace with JWT-derived Supabase user identity
+    # once login/signup and request authentication are implemented.
+    owner_id = (settings.dev_owner_user_id or "").strip()
+    if not owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DEV_OWNER_USER_ID is required until authenticated user identity is implemented.",
+        )
+    return owner_id
 
 
 async def get_content_agent() -> ContentAgent:

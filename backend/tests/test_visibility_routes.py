@@ -59,6 +59,49 @@ async def test_generate_visibility_local_reach_returns_fallback_output() -> None
 
 
 @pytest.mark.anyio
+async def test_generate_visibility_uses_active_business_context_in_fallback() -> None:
+    payload = {
+        "toolType": "business_intro_post",
+        "location": "",
+        "activeBusiness": {
+            "name": "Gomez Painting Ops",
+            "industry": "Residential painting",
+            "location": "Cicero",
+            "website_url": "https://gomez.example",
+        },
+        "businessContext": {
+            "services": ["Cabinet refinishing", "Interior painting"],
+            "target_customers": "busy homeowners",
+            "brand_voice": "warm and practical",
+            "differentiators": ["clean prep", "clear scheduling"],
+            "service_area": "Cicero and Berwyn",
+            "notes": "Family-run painting crew focused on tidy job sites",
+        },
+        "businessProfile": {
+            "business_name": "Legacy Name",
+            "industry": "Painting",
+            "service_area_cities": ["Oak Park"],
+            "services_offered": ["Exterior painting"],
+            "website_url": "https://legacy.example",
+            "primary_cta": "Request a free estimate",
+        },
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/visibility/generate", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["generationMode"] == "fallback"
+    assert "Gomez Painting Ops" in data["primary"]
+    assert "Cicero and Berwyn" in data["primary"]
+    assert "Cabinet refinishing" in data["primary"]
+    assert "clean prep" in data["primary"]
+    assert "https://gomez.example" in data["ctaLine"]
+
+
+@pytest.mark.anyio
 async def test_generate_visibility_falls_back_when_llm_service_fails() -> None:
     async def override_llm_service() -> FailingVisibilityLLMService:
         return FailingVisibilityLLMService()
