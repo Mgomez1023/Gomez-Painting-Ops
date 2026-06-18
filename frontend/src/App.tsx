@@ -12,11 +12,15 @@ import {
   ApiError,
   approveCampaignContent,
   approveContent,
+  assignBusinessPublishTarget,
   createBusiness,
   createBusinessPhotoAsset,
+  createFakeGoogleConnection,
+  createFakeMetaConnection,
   createGeneratedPost,
   deleteBusinessPhotoAsset,
   deletePost,
+  disconnectSocialConnection,
   generateAndSave,
   generateAndSaveCampaign,
   generateManualSocialPost,
@@ -25,7 +29,10 @@ import {
   getBusinessContext,
   listBusinessPhotoAssets,
   listBusinesses,
+  listBusinessPublishTargets,
   listGeneratedPosts,
+  listSocialConnections,
+  listSocialTargets,
   getCampaignContentQueue,
   getCampaigns,
   getContentQueue,
@@ -45,6 +52,7 @@ import {
   restorePostToQueue,
   runDuePublishing,
   scheduleCampaignContent,
+  unassignBusinessPublishTarget,
   upsertBusinessContext,
   updateBusiness,
   updatePostImage,
@@ -55,6 +63,7 @@ import type {
   BusinessProfile,
   Business,
   BusinessPayload,
+  BusinessPublishTarget,
   BusinessContext,
   BusinessContextPayload,
   BusinessPhotoAsset,
@@ -71,6 +80,9 @@ import type {
   GeneratedPost,
   GeneratedPostPayload,
   EmojiPreference,
+  PublishTargetPlatform,
+  SocialConnection,
+  SocialTarget,
   VisibilityGenerationResponse,
   VisibilityPhotoAssetMetadata,
 } from './types';
@@ -84,13 +96,14 @@ type AppTheme = 'light' | 'dark';
 type ToastType = 'success' | 'error' | 'warning' | 'info';
 type VisibilityToolId =
   | 'local-reach-post'
+  | 'recent-work-post'
   | 'review-request'
-  | 'business-intro-post'
-  | 'craigslist-service-ad';
+  | 'business-intro-post';
 type LocalReachDestination =
   | 'Google Business Profile'
   | 'Facebook Group'
   | 'Craigslist'
+  | 'General Copy/Paste'
   | 'Neighborhood Group'
   | 'General Social Post';
 type LocalReachPostType =
@@ -114,7 +127,19 @@ type VisibilityChannel =
   | 'Craigslist'
   | 'Neighborhood Groups'
   | 'General Social Post';
-type SavedGeneratedPostFilter = 'all' | 'reach' | 'review' | 'intro';
+type SavedGeneratedPostFilter = 'all' | 'reach' | 'recent-work' | 'review' | 'intro';
+type VisibilityRefinement = 'shorter' | 'friendlier' | 'professional' | 'stronger-cta';
+
+const publishTargetPlatforms: PublishTargetPlatform[] = ['Facebook', 'Instagram', 'Google Business'];
+
+type PublishTargetStateKind = 'assigned' | 'missing' | 'manual' | 'loading' | 'unavailable';
+
+type PublishTargetState = {
+  kind: PublishTargetStateKind;
+  label: string;
+  detail: string;
+  targetName: string | null;
+};
 
 type AppToast = {
   id: string;
@@ -237,6 +262,7 @@ type VisibilityToolCard = {
   title: string;
   description: string;
   label: string;
+  icon: IconName;
 };
 
 type VisibilityToolFormData = {
@@ -538,7 +564,7 @@ const emptyBusinessContextDraft: BusinessContextDraft = {
 
 const appNavItems: AppNavItem[] = [
   { key: 'calendar', label: 'Calendar', description: '' },
-  { key: 'visibility-tools', label: 'Visibility Tools', description: '' },
+  { key: 'visibility-tools', label: 'Get Customers', description: '' },
   { key: 'business-profile', label: 'Business Profile', description: '' },
   { key: 'photo-library', label: 'Photo Library', description: '' },
   { key: 'jobs-queues', label: 'Jobs + Queues', description: '' },
@@ -548,37 +574,39 @@ const settingsNavItem: AppNavItem = { key: 'settings', label: 'Settings', descri
 const visibilityToolCards: VisibilityToolCard[] = [
   {
     id: 'local-reach-post',
-    title: 'Groups + Business',
-    description:
-      'Generate a post for Google Business, Facebook groups, Craigslist, or other general copy/paste outreach.',
+    title: 'Get More Leads',
+    description: 'Create a local post designed to get estimate requests, calls, or messages.',
     label: '',
+    icon: 'megaphone',
+  },
+  {
+    id: 'recent-work-post',
+    title: 'Show Recent Work',
+    description: 'Turn a project photo into a polished post that builds trust.',
+    label: '',
+    icon: 'image',
   },
   {
     id: 'review-request',
-    title: 'Review Request',
-    description: 'Generate a short message asking a past customer for a Google review.',
-    label: 'Reputation',
+    title: 'Ask for a Review',
+    description: 'Generate a short message asking a customer to leave a Google review.',
+    label: '',
+    icon: 'star',
   },
   {
     id: 'business-intro-post',
-    title: 'Business Intro Post',
-    description: 'Generate a local "hey neighbors" introduction post for a new business or new service area.',
-    label: 'Local intro',
-  },
-  {
-    id: 'craigslist-service-ad',
-    title: 'Craigslist Service Ad',
-    description: 'Generate a longer service ad with titles, body copy, service list, trust section, CTA, photos, and local keywords.',
-    label: 'Craigslist',
+    title: 'Introduce My Business',
+    description: 'Create a friendly local intro post for a business, service area, or new offer.',
+    label: '',
+    icon: 'store',
   },
 ];
 
 const localReachDestinationOptions: LocalReachDestination[] = [
-  'Google Business Profile',
   'Facebook Group',
+  'Google Business Profile',
   'Craigslist',
-  'Neighborhood Group',
-  'General Social Post',
+  'General Copy/Paste',
 ];
 
 const localReachPostTypeOptions: LocalReachPostType[] = [
@@ -612,11 +640,15 @@ type IconName =
   | 'copy'
   | 'download'
   | 'edit'
+  | 'image'
   | 'menu'
+  | 'megaphone'
   | 'restore'
   | 'save'
   | 'settings'
   | 'skip'
+  | 'star'
+  | 'store'
   | 'trash'
   | 'x';
 
@@ -633,6 +665,19 @@ function Icon({ name }: { name: IconName }) {
       <>
         <path d="M12 20h9" />
         <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      </>
+    ),
+    image: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <circle cx="8" cy="10" r="1.5" />
+        <path d="m21 15-5-5L5 19" />
+      </>
+    ),
+    megaphone: (
+      <>
+        <path d="m3 11 18-5v12L3 14v-3Z" />
+        <path d="M7 14v4a2 2 0 0 0 2 2h1" />
       </>
     ),
     download: (
@@ -673,6 +718,16 @@ function Icon({ name }: { name: IconName }) {
         <circle cx="12" cy="12" r="9" />
         <path d="m9 9 6 6" />
         <path d="m15 9-6 6" />
+      </>
+    ),
+    star: (
+      <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.2 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z" />
+    ),
+    store: (
+      <>
+        <path d="M4 10h16l-1.5-6h-13L4 10Z" />
+        <path d="M5 10v10h14V10" />
+        <path d="M9 20v-6h6v6" />
       </>
     ),
     trash: (
@@ -755,14 +810,14 @@ function createDefaultVisibilityToolFormData(
 
   return {
     destination: defaultDestination,
-    postType: 'Service promotion',
-    goal: 'Get estimate requests',
+    postType: toolId === 'recent-work-post' ? 'Recent project' : 'Service promotion',
+    goal: toolId === 'recent-work-post' ? 'Show recent work' : 'Get estimate requests',
     serviceFocus: defaultService,
     location: defaultLocation,
     cta: defaultCta,
     photoAssetId: '',
     notes: '',
-    tone: toolId === 'review-request' ? 'Friendly and professional' : 'Friendly neighbor',
+    tone: toolId === 'review-request' ? 'Friendly' : 'Friendly neighbor',
     customerName: '',
     jobCompleted: defaultService,
     reviewLink: profile.website_url.trim(),
@@ -783,25 +838,28 @@ function getVisibilityToolById(toolId: VisibilityToolId | null) {
 }
 
 function getVisibilityToolMobileLabel(toolId: VisibilityToolId) {
-  if (toolId === 'local-reach-post') return 'Groups + Business';
+  if (toolId === 'local-reach-post') return 'Leads';
+  if (toolId === 'recent-work-post') return 'Recent Work';
   if (toolId === 'review-request') return 'Reviews';
   if (toolId === 'business-intro-post') return 'Intro';
-  return 'Craigslist';
+  return 'Start';
 }
 
 function visibilityToolSupportsPhoto(toolId: VisibilityToolId) {
-  return toolId === 'local-reach-post' || toolId === 'craigslist-service-ad';
+  return toolId === 'local-reach-post' || toolId === 'recent-work-post';
 }
 
 function destinationFromVisibilityChannel(channel: VisibilityChannel): LocalReachDestination {
   if (channel === 'Facebook Groups') return 'Facebook Group';
   if (channel === 'Neighborhood Groups') return 'Neighborhood Group';
+  if (channel === 'General Social Post') return 'General Copy/Paste';
   return channel;
 }
 
 function visibilityChannelFromDestination(destination: LocalReachDestination): VisibilityChannel {
   if (destination === 'Facebook Group') return 'Facebook Groups';
   if (destination === 'Neighborhood Group') return 'Neighborhood Groups';
+  if (destination === 'General Copy/Paste') return 'General Social Post';
   return destination;
 }
 
@@ -1129,7 +1187,7 @@ function buildVisibilityToolOutput(
   const tone = formData.tone.toLowerCase();
   const emojiPrefix = visibilityEmojiPrefix(emojiPreference, profile, activeBusiness, context);
 
-  if (toolId === 'local-reach-post') {
+  if (toolId === 'local-reach-post' || toolId === 'recent-work-post') {
     return buildLocalReachPostOutput(formData, profile, activeBusiness, context, photoAsset, emojiPreference);
   }
 
@@ -1155,33 +1213,6 @@ function buildVisibilityToolOutput(
       ? ` What makes us different: ${context.differentiators.slice(0, 2).join(' and ')}.`
       : '';
     return `${emojiPrefix}Hey neighbors - we are ${businessName}, a local ${getVisibilityIndustry(profile, activeBusiness).toLowerCase()} business serving ${location}. We help with ${services}. ${background}.${differentiatorLine} If you are planning a project nearby, ${ctaLine}.`;
-  }
-
-  if (toolId === 'craigslist-service-ad') {
-    const services = [service, 'Interior painting', 'Exterior painting', 'Cabinet painting', 'Drywall repair'];
-    const uniqueServices = Array.from(new Set(services.filter(Boolean)));
-    const contact = formData.contact || profile.website_url || profile.phone_number;
-    return [
-      `Primary post:`,
-      `${emojiPrefix}${businessName} - ${service} in ${location}`,
-      '',
-      `If you are dealing with ${formData.customerPainPoint || 'paint that looks tired, damaged, or overdue for a refresh'}, ${businessName} can help with reliable ${service.toLowerCase()} in ${location}.`,
-      '',
-      'Services:',
-      ...uniqueServices.map((item) => `- ${item}`),
-      '',
-      'Why choose us:',
-      formData.trustSignals || 'Clear estimates, careful prep, clean work areas, and local service.',
-      '',
-      'CTA:',
-      contact ? `${formData.cta || profile.primary_cta}: ${contact}` : ctaLine,
-      '',
-      'Short version:',
-      `${service} in ${location}. Clean work, clear estimates, local service. ${contact ? `${formData.cta || profile.primary_cta}: ${contact}` : ctaLine}`,
-      '',
-      'Suggested local keywords or hashtags:',
-      `${service} ${location}, ${location} painting services, residential painting, free painting estimate`,
-    ].join('\n');
   }
 
   return '';
@@ -1454,13 +1485,14 @@ function buildActiveBusinessGenerationProfile(
 
 function visibilityToolTypeForPost(toolId: VisibilityToolId): SavedGeneratedPostFilter | null {
   if (toolId === 'local-reach-post') return 'reach';
+  if (toolId === 'recent-work-post') return 'recent-work';
   if (toolId === 'review-request') return 'review';
   if (toolId === 'business-intro-post') return 'intro';
   return null;
 }
 
 function visibilityPlatformForPost(toolId: VisibilityToolId, formData: VisibilityToolFormData) {
-  if (toolId === 'local-reach-post') return formData.destination;
+  if (toolId === 'local-reach-post' || toolId === 'recent-work-post') return formData.destination;
   if (toolId === 'review-request') return 'Review Request';
   if (toolId === 'business-intro-post') return 'General Social Post';
   return null;
@@ -1468,7 +1500,10 @@ function visibilityPlatformForPost(toolId: VisibilityToolId, formData: Visibilit
 
 function visibilityGeneratedPostTitle(toolId: VisibilityToolId, formData: VisibilityToolFormData) {
   if (toolId === 'local-reach-post') {
-    return `${formData.destination} - ${formData.postType}`;
+    return `Lead post - ${formData.destination}`;
+  }
+  if (toolId === 'recent-work-post') {
+    return formData.location.trim() ? `Recent work - ${formData.location.trim()}` : 'Recent work';
   }
   if (toolId === 'review-request') {
     return formData.customerName.trim() ? `Review request - ${formData.customerName.trim()}` : 'Review request';
@@ -1480,9 +1515,10 @@ function visibilityGeneratedPostTitle(toolId: VisibilityToolId, formData: Visibi
 }
 
 function generatedPostToolLabel(toolType: string) {
-  if (toolType === 'reach') return 'Reach';
-  if (toolType === 'review') return 'Review';
-  if (toolType === 'intro') return 'Intro';
+  if (toolType === 'reach') return 'Leads';
+  if (toolType === 'recent-work') return 'Recent Work';
+  if (toolType === 'review') return 'Reviews';
+  if (toolType === 'intro') return 'Intros';
   return toolType;
 }
 
@@ -1494,6 +1530,18 @@ function formatGeneratedPostDate(value: string) {
     day: 'numeric',
     year: 'numeric',
   }).format(date);
+}
+
+function appendVisibilityRefinementNote(notes: string, instruction: string) {
+  const trimmedNotes = notes.trim();
+  return trimmedNotes ? `${trimmedNotes}\n${instruction}` : instruction;
+}
+
+function visibilityRefinementInstruction(refinement: VisibilityRefinement) {
+  if (refinement === 'shorter') return 'Refinement: make the copy shorter and easier to scan.';
+  if (refinement === 'friendlier') return 'Refinement: make the copy warmer and more neighborly.';
+  if (refinement === 'professional') return 'Refinement: make the copy more polished and professional.';
+  return 'Refinement: add a clearer, stronger call to action.';
 }
 
 function parseEditableProfileList(value: string) {
@@ -2210,7 +2258,8 @@ function getContentSlotTitle(items: CampaignContentQueueItem[]) {
 }
 
 function getPlanningStatus(item: CampaignContentQueueItem) {
-  if (item.status === 'Posted' || item.status === 'Published' || item.published === 'Yes') return 'Posted';
+  if (item.status === 'Posted') return 'Posted';
+  if (item.status === 'Published' || item.published === 'Yes') return 'Published';
   if (item.status === 'Scheduled') return 'Scheduled';
   if (item.status === 'Approved' || item.approved === 'Yes') return item.scheduled_at ? 'Scheduled' : 'Approved';
   return item.status || 'Draft';
@@ -2478,6 +2527,92 @@ function getPlatformBadgeState(slot: ContentSlot, platform: CalendarPlatform) {
   return slot.platformPosts.some((post) => {
     return post.platform === platform;
   });
+}
+
+function publishTargetPlatformFromCalendarPlatform(platform: CalendarPlatform): PublishTargetPlatform | null {
+  if (platform === 'Facebook' || platform === 'Instagram' || platform === 'Google Business') return platform;
+  return null;
+}
+
+function getPublishTargetMissingMessage(platform: PublishTargetPlatform) {
+  if (platform === 'Facebook') return 'Connect or assign Facebook Page in Settings';
+  if (platform === 'Instagram') return 'Connect or assign Instagram Account in Settings';
+  return 'Connect or assign Google Business Location in Settings';
+}
+
+function getPublishTargetState(
+  platform: CalendarPlatform,
+  socialTargets: SocialTarget[],
+  businessPublishTargets: BusinessPublishTarget[],
+  loading: boolean,
+  error: string | null,
+): PublishTargetState {
+  if (platform === 'Facebook Groups') {
+    return {
+      kind: 'manual',
+      label: 'Manual only',
+      detail: 'Manual posting assistant only',
+      targetName: null,
+    };
+  }
+
+  const publishPlatform = publishTargetPlatformFromCalendarPlatform(platform);
+  if (!publishPlatform) {
+    return {
+      kind: 'manual',
+      label: 'Manual/export',
+      detail: 'Manual or export workflow only',
+      targetName: null,
+    };
+  }
+
+  if (loading) {
+    return {
+      kind: 'loading',
+      label: 'Checking target',
+      detail: 'Checking publishing target status',
+      targetName: null,
+    };
+  }
+
+  if (error) {
+    return {
+      kind: 'unavailable',
+      label: 'Target unavailable',
+      detail: 'Publishing target status unavailable',
+      targetName: null,
+    };
+  }
+
+  const mapping = businessPublishTargets.find((item) => item.platform === publishPlatform);
+  const target = mapping ? socialTargets.find((item) => item.id === mapping.social_target_id) : null;
+  if (target) {
+    return {
+      kind: 'assigned',
+      label: 'Assigned target',
+      detail: `Target: ${target.display_name}`,
+      targetName: target.display_name,
+    };
+  }
+
+  return {
+    kind: 'missing',
+    label: 'Missing target',
+    detail: getPublishTargetMissingMessage(publishPlatform),
+    targetName: null,
+  };
+}
+
+function getPublishTargetStateClassName(state: PublishTargetState) {
+  return `target-state-${state.kind}`;
+}
+
+function getPublishTargetChipLabel(state: PublishTargetState) {
+  if (state.kind === 'assigned') return state.targetName ? `Target: ${state.targetName}` : 'Target';
+  if (state.kind === 'manual') return 'Manual';
+  if (state.kind === 'loading') return 'Checking';
+  if (state.kind === 'unavailable') return 'Unavailable';
+  return 'Missing';
 }
 
 function formatDisplayDate(value: string | null) {
@@ -2793,6 +2928,10 @@ function App() {
   const [loadingBusinessContext, setLoadingBusinessContext] = useState(false);
   const [savingBusinessContext, setSavingBusinessContext] = useState(false);
   const [businessContextError, setBusinessContextError] = useState<string | null>(null);
+  const [publishSocialTargets, setPublishSocialTargets] = useState<SocialTarget[]>([]);
+  const [activeBusinessPublishTargets, setActiveBusinessPublishTargets] = useState<BusinessPublishTarget[]>([]);
+  const [loadingPublishTargets, setLoadingPublishTargets] = useState(false);
+  const [publishTargetsError, setPublishTargetsError] = useState<string | null>(null);
   const [photoAssets, setPhotoAssets] = useState<PhotoAsset[]>([]);
   const [selectedVisibilityToolId, setSelectedVisibilityToolId] = useState<VisibilityToolId>('local-reach-post');
   const [visibilityToolFormData, setVisibilityToolFormData] = useState<VisibilityToolFormData>(() =>
@@ -2879,6 +3018,16 @@ function App() {
       };
       setToasts((current) => [...current, toast].slice(-5));
       return toast.id;
+    },
+    [],
+  );
+
+  const handlePublishTargetStateChange = useCallback(
+    (targets: SocialTarget[], mappings: BusinessPublishTarget[]) => {
+      setPublishSocialTargets(targets);
+      setActiveBusinessPublishTargets(mappings);
+      setLoadingPublishTargets(false);
+      setPublishTargetsError(null);
     },
     [],
   );
@@ -3044,6 +3193,33 @@ function App() {
     }
   }, []);
 
+  const loadActiveBusinessPublishTargets = useCallback(async (businessId = activeBusinessId) => {
+    if (!businessId) {
+      setPublishSocialTargets([]);
+      setActiveBusinessPublishTargets([]);
+      setPublishTargetsError(null);
+      setLoadingPublishTargets(false);
+      return;
+    }
+
+    setLoadingPublishTargets(true);
+    setPublishTargetsError(null);
+    try {
+      const [targets, mappings] = await Promise.all([
+        listSocialTargets(),
+        listBusinessPublishTargets(businessId),
+      ]);
+      setPublishSocialTargets(targets);
+      setActiveBusinessPublishTargets(mappings);
+    } catch (err) {
+      setPublishSocialTargets([]);
+      setActiveBusinessPublishTargets([]);
+      setPublishTargetsError(err instanceof Error ? err.message : 'Unable to load publishing target status.');
+    } finally {
+      setLoadingPublishTargets(false);
+    }
+  }, [activeBusinessId]);
+
   useEffect(() => {
     void loadBusinesses();
     void loadCampaigns();
@@ -3067,11 +3243,19 @@ function App() {
     storeActiveBusinessId(activeBusinessId);
     void loadSavedGeneratedPosts(activeBusinessId);
     void loadActiveBusinessContext(activeBusinessId);
+    void loadActiveBusinessPublishTargets(activeBusinessId);
     void loadWeeklyQueue(calendarWeekStartDate);
     setSelectedContentSlotId(null);
     setPendingDeleteContentSlotId(null);
     setPhotoPickerContentSlotId(null);
-  }, [activeBusinessId, calendarWeekStartDate, loadActiveBusinessContext, loadSavedGeneratedPosts, loadWeeklyQueue]);
+  }, [
+    activeBusinessId,
+    calendarWeekStartDate,
+    loadActiveBusinessContext,
+    loadActiveBusinessPublishTargets,
+    loadSavedGeneratedPosts,
+    loadWeeklyQueue,
+  ]);
 
   useEffect(() => {
     setVisibilityToolFormData((current) => ({
@@ -3335,7 +3519,7 @@ function App() {
       return Promise.all([loadJobs(), loadQueue(), loadCampaigns(), loadCampaignQueue()]);
     }
     if (activeSection === 'calendar') {
-      return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets()]);
+      return Promise.all([loadCampaigns(), loadWeeklyQueue(), loadPhotoAssets(), loadActiveBusinessPublishTargets(activeBusinessId)]);
     }
     if (activeSection === 'visibility-tools') {
       return Promise.all([
@@ -3343,6 +3527,7 @@ function App() {
         loadWeeklyQueue(),
         loadPhotoAssets(),
         loadBusinesses(),
+        loadActiveBusinessPublishTargets(activeBusinessId),
         loadSavedGeneratedPosts(activeBusinessId),
         loadActiveBusinessContext(activeBusinessId),
       ]);
@@ -3382,47 +3567,45 @@ function App() {
     setVisibilityToolCopied(false);
   }
 
-  async function handleGenerateVisibilityTool() {
+  async function handleGenerateVisibilityTool(nextFormData: VisibilityToolFormData = visibilityToolFormData) {
     setVisibilityToolGenerating(true);
     setVisibilityToolError(null);
     setVisibilityToolCopied(false);
 
     const selectedAsset =
-      photoAssets.find((asset) => asset.id === visibilityToolFormData.photoAssetId) ?? null;
+      photoAssets.find((asset) => asset.id === nextFormData.photoAssetId) ?? null;
     const selectedAssets = photoAssets.filter((asset) =>
-      visibilityToolFormData.selectedPhotoAssetIds.includes(asset.id),
+      nextFormData.selectedPhotoAssetIds.includes(asset.id),
     );
 
     try {
       const result = await generateVisibilityContent({
         toolType:
-          selectedVisibilityToolId === 'local-reach-post'
+          selectedVisibilityToolId === 'local-reach-post' || selectedVisibilityToolId === 'recent-work-post'
             ? 'local_reach_post'
             : selectedVisibilityToolId === 'review-request'
               ? 'review_request'
-              : selectedVisibilityToolId === 'business-intro-post'
-                ? 'business_intro_post'
-                : 'craigslist_service_ad',
-        destination: visibilityToolFormData.destination,
-        postType: visibilityToolFormData.postType,
+              : 'business_intro_post',
+        destination: nextFormData.destination,
+        postType: nextFormData.postType,
         activeBusiness,
         businessContext: activeBusinessContext,
         businessProfile,
-        serviceFocus: visibilityToolFormData.serviceFocus,
-        location: visibilityToolFormData.location,
-        goal: visibilityToolFormData.goal,
-        tone: visibilityToolFormData.tone,
-        cta: visibilityToolFormData.cta,
-        notes: visibilityToolFormData.notes,
-        customerName: visibilityToolFormData.customerName,
-        jobCompleted: visibilityToolFormData.jobCompleted,
-        reviewLink: visibilityToolFormData.reviewLink,
-        servicesToMention: visibilityToolFormData.servicesToMention,
-        businessBackground: visibilityToolFormData.businessBackground,
-        offerDetails: visibilityToolFormData.offerDetails,
-        customerPainPoint: visibilityToolFormData.customerPainPoint,
-        trustSignals: visibilityToolFormData.trustSignals,
-        contact: visibilityToolFormData.contact,
+        serviceFocus: nextFormData.serviceFocus,
+        location: nextFormData.location,
+        goal: nextFormData.goal,
+        tone: nextFormData.tone,
+        cta: nextFormData.cta,
+        notes: nextFormData.notes,
+        customerName: nextFormData.customerName,
+        jobCompleted: nextFormData.jobCompleted,
+        reviewLink: nextFormData.reviewLink,
+        servicesToMention: nextFormData.servicesToMention,
+        businessBackground: nextFormData.businessBackground,
+        offerDetails: nextFormData.offerDetails,
+        customerPainPoint: nextFormData.customerPainPoint,
+        trustSignals: nextFormData.trustSignals,
+        contact: nextFormData.contact,
         photoAsset: selectedAsset ? photoAssetToVisibilityMetadata(selectedAsset) : null,
         photoAssets: selectedAssets.map(photoAssetToVisibilityMetadata),
         emojiPreference,
@@ -3432,11 +3615,11 @@ function App() {
     } catch (err) {
       const generatedText = buildVisibilityToolOutput(
         selectedVisibilityToolId,
-        visibilityToolFormData,
+        nextFormData,
         businessProfile,
         activeBusiness,
         activeBusinessContext,
-        selectedVisibilityToolId === 'craigslist-service-ad' ? selectedAssets[0] ?? null : selectedAsset,
+        selectedAsset,
         emojiPreference,
       );
       setVisibilityToolOutput(fallbackVisibilityResponseFromText(generatedText));
@@ -3448,6 +3631,34 @@ function App() {
     } finally {
       setVisibilityToolGenerating(false);
     }
+  }
+
+  async function handleRefineVisibilityToolOutput(refinement: VisibilityRefinement) {
+    if (!formatVisibilityResponseForCopy(visibilityToolOutput).trim()) {
+      setVisibilityToolError('Generate an output before refining.');
+      return;
+    }
+
+    const nextFormData: VisibilityToolFormData = {
+      ...visibilityToolFormData,
+      notes: appendVisibilityRefinementNote(
+        visibilityToolFormData.notes,
+        visibilityRefinementInstruction(refinement),
+      ),
+      tone:
+        refinement === 'friendlier'
+          ? 'Friendly neighbor'
+          : refinement === 'professional'
+            ? 'Professional'
+            : visibilityToolFormData.tone,
+      cta:
+        refinement === 'stronger-cta' && !/call|message|estimate|quote|book/i.test(visibilityToolFormData.cta)
+          ? 'Call or message today to request a free estimate'
+          : visibilityToolFormData.cta,
+    };
+
+    setVisibilityToolFormData(nextFormData);
+    await handleGenerateVisibilityTool(nextFormData);
   }
 
   async function handleCopyVisibilityToolOutput() {
@@ -4741,11 +4952,7 @@ function App() {
     savedGeneratedPostFilter === 'all'
       ? savedGeneratedPosts
       : savedGeneratedPosts.filter((post) => post.tool_type === savedGeneratedPostFilter);
-  const enabledVisibilityChannels = visibilityChannelsFromProfile(businessProfile);
-  const enabledLocalReachDestinations = enabledVisibilityChannels.map(destinationFromVisibilityChannel);
-  const visibleVisibilityToolCards = visibilityToolCards.filter(
-    (tool) => tool.id !== 'craigslist-service-ad' || enabledVisibilityChannels.includes('Craigslist'),
-  );
+  const enabledLocalReachDestinations = localReachDestinationOptions;
   const activeMainNavIndex = appNavItems.findIndex((item) => item.key === activeSection);
   const activeNavItem = activeSection === 'settings' ? settingsNavItem : appNavItems[Math.max(activeMainNavIndex, 0)] ?? appNavItems[0];
   const sidebarNavStyle = {
@@ -4841,8 +5048,8 @@ function App() {
         <section className="panel visibility-tools-panel">
           <div className="panel-heading weekly-heading">
             <div>
-              <h2>Visibility Tools</h2>
-              <p>One-off local visibility actions that sit outside the normal feed calendar workflow.</p>
+              <h2>Get Customers</h2>
+              <p>Pick what you need, answer a few details, and generate copy.</p>
             </div>
             <div className="panel-heading-actions">
               {loadingCampaigns || loadingWeeklyQueue ? <span className="loading-label">Loading</span> : null}
@@ -4850,7 +5057,7 @@ function App() {
           </div>
 
           <div className="visibility-tool-grid">
-            {visibleVisibilityToolCards.map((tool) => (
+            {visibilityToolCards.map((tool) => (
               <button
                 aria-pressed={selectedVisibilityToolId === tool.id}
                 className={`visibility-tool-card ${selectedVisibilityToolId === tool.id ? 'visibility-tool-card-active' : ''}`}
@@ -4859,10 +5066,13 @@ function App() {
                 type="button"
                 onClick={() => openVisibilityTool(tool.id)}
               >
+                <span className="visibility-tool-icon">
+                  <Icon name={tool.icon} />
+                </span>
                 <span className="visibility-tool-mobile-label">{getVisibilityToolMobileLabel(tool.id)}</span>
                 <h3>{tool.title}</h3>
                 <p>{tool.description}</p>
-                <span className="visibility-tool-cta">{selectedVisibilityToolId === tool.id ? 'Selected' : 'Select'}</span>
+                <span className="visibility-tool-cta">Start</span>
               </button>
             ))}
           </div>
@@ -4884,6 +5094,7 @@ function App() {
               onChange={updateVisibilityToolFormData}
               onCopy={() => void handleCopyVisibilityToolOutput()}
               onGenerate={() => void handleGenerateVisibilityTool()}
+              onRefine={(refinement) => void handleRefineVisibilityToolOutput(refinement)}
               onSave={() => void handleSaveVisibilityToolOutput()}
               onOutputChange={(output) => {
                 setVisibilityToolCopied(false);
@@ -4899,7 +5110,6 @@ function App() {
             filter={savedGeneratedPostFilter}
             loading={loadingSavedGeneratedPosts}
             posts={filteredSavedGeneratedPosts}
-            totalCount={savedGeneratedPosts.length}
             onFilterChange={setSavedGeneratedPostFilter}
           />
         </section>
@@ -4980,11 +5190,27 @@ function App() {
                           <div className="content-slot-card-footer">
                             <div className="platform-chip-row" aria-label="Platforms">
                               {platformLabels.length > 0 ? (
-                                platformLabels.map((platform) => (
-                                  <span className="platform-chip" key={platform.platform}>
-                                    {platform.label}
-                                  </span>
-                                ))
+                                platformLabels.map((platform) => {
+                                  const targetState = getPublishTargetState(
+                                    platform.platform,
+                                    publishSocialTargets,
+                                    activeBusinessPublishTargets,
+                                    loadingPublishTargets,
+                                    publishTargetsError,
+                                  );
+                                  return (
+                                    <span
+                                      className={`platform-chip platform-chip-with-target ${getPublishTargetStateClassName(
+                                        targetState,
+                                      )}`}
+                                      key={platform.platform}
+                                      title={targetState.detail}
+                                    >
+                                      <strong>{platform.label}</strong>
+                                      <small>{getPublishTargetChipLabel(targetState)}</small>
+                                    </span>
+                                  );
+                                })
                               ) : (
                                 <span className="platform-chip platform-chip-muted">No platform</span>
                               )}
@@ -5182,6 +5408,8 @@ function App() {
           onBusinessDraftChange={setBusinessCreateDraft}
           onBusinessSelect={setActiveBusinessId}
           onEmojiPreferenceChange={setEmojiPreference}
+          onNotify={pushToast}
+          onPublishTargetStateChange={handlePublishTargetStateChange}
           onThemeChange={(nextTheme) => setTheme(nextTheme)}
         />
       ) : null}
@@ -5635,8 +5863,12 @@ function App() {
           busyAction={busyAction}
           draftTextEdits={draftTextEdits}
           editingDraftId={editingDraftId}
+          loadingPublishTargets={loadingPublishTargets}
           photoAsset={getContentSlotPhotoAsset(selectedContentSlot, photoAssets)}
+          publishTargetsError={publishTargetsError}
           slot={selectedContentSlot}
+          businessPublishTargets={activeBusinessPublishTargets}
+          socialTargets={publishSocialTargets}
           usesPhotoLibrary={contentSlotUsesPhotoLibrary(selectedContentSlot, photoAssets)}
           onApprove={handleApproveWeeklyPost}
           onCancelEdit={cancelEditingDraft}
@@ -5650,6 +5882,10 @@ function App() {
             }))
           }
           onPost={openPostAssistant}
+          onOpenSettings={() => {
+            closeContentSlot();
+            setActiveSection('settings');
+          }}
           onRegenerate={handleRegeneratePlatformPost}
           onSaveDraft={handleSaveDraftText}
           onStartEdit={startEditingDraft}
@@ -5701,6 +5937,24 @@ function App() {
               <span>{formatPlatformLabel(postAssistantItem.platform)}</span>
               <span>{formatDisplayDate(getContentItemScheduledAt(postAssistantItem))}</span>
               {postAssistantItem.post_type ? <span>{postAssistantItem.post_type}</span> : null}
+              {getCalendarPlatformsForItem(postAssistantItem).map((platform) => {
+                const targetState = getPublishTargetState(
+                  platform,
+                  publishSocialTargets,
+                  activeBusinessPublishTargets,
+                  loadingPublishTargets,
+                  publishTargetsError,
+                );
+                return (
+                  <span
+                    className={`post-assistant-target-state ${getPublishTargetStateClassName(targetState)}`}
+                    key={platform}
+                    title={targetState.detail}
+                  >
+                    {formatCalendarPlatformShortLabel(platform)}: {getPublishTargetChipLabel(targetState)}
+                  </span>
+                );
+              })}
             </div>
 
             {postAssistantError ? (
@@ -6099,6 +6353,8 @@ function SettingsSection({
   onBusinessDraftChange,
   onBusinessSelect,
   onEmojiPreferenceChange,
+  onNotify,
+  onPublishTargetStateChange,
   onThemeChange,
 }: {
   activeBusiness: Business | null;
@@ -6113,14 +6369,168 @@ function SettingsSection({
   onBusinessDraftChange: (draft: BusinessCreateDraft) => void;
   onBusinessSelect: (businessId: string) => void;
   onEmojiPreferenceChange: (preference: EmojiPreference) => void;
+  onNotify?: (toast: { durationMs?: number; message: string; title?: string; type: ToastType }) => string;
+  onPublishTargetStateChange?: (targets: SocialTarget[], mappings: BusinessPublishTarget[]) => void;
   onThemeChange: (theme: AppTheme) => void;
 }) {
+  const [socialConnections, setSocialConnections] = useState<SocialConnection[]>([]);
+  const [socialTargets, setSocialTargets] = useState<SocialTarget[]>([]);
+  const [businessPublishTargets, setBusinessPublishTargets] = useState<BusinessPublishTarget[]>([]);
+  const [loadingPublishingIntegrations, setLoadingPublishingIntegrations] = useState(false);
+  const [loadedPublishingIntegrationsBusinessId, setLoadedPublishingIntegrationsBusinessId] = useState<string | null>(null);
+  const [publishingIntegrationsError, setPublishingIntegrationsError] = useState<string | null>(null);
+  const [publishingIntegrationsNotice, setPublishingIntegrationsNotice] = useState<string | null>(null);
+  const [publishingIntegrationsBusyAction, setPublishingIntegrationsBusyAction] = useState<string | null>(null);
   const darkModeEnabled = theme === 'dark';
   const emojiOptions: Array<{ label: string; value: EmojiPreference }> = [
     { label: 'Less', value: 'less' },
     { label: 'Default', value: 'default' },
     { label: 'More', value: 'more' },
   ];
+  const metaConnection = socialConnections.find((connection) => connection.provider === 'meta') ?? null;
+  const googleConnection = socialConnections.find((connection) => connection.provider === 'google_business') ?? null;
+  const activePublishingIntegrationsBusinessKey = activeBusinessId ?? 'none';
+  const showPublishingIntegrationsLoading =
+    loadingPublishingIntegrations && loadedPublishingIntegrationsBusinessId !== activePublishingIntegrationsBusinessKey;
+
+  const loadPublishingIntegrations = useCallback(async () => {
+    const loadBusinessKey = activeBusinessId ?? 'none';
+    setLoadingPublishingIntegrations(true);
+    setPublishingIntegrationsError(null);
+    try {
+      const [connections, targets, mappings] = await Promise.all([
+        listSocialConnections(),
+        listSocialTargets(),
+        activeBusinessId ? listBusinessPublishTargets(activeBusinessId) : Promise.resolve([]),
+      ]);
+      setSocialConnections(connections);
+      setSocialTargets(targets);
+      setBusinessPublishTargets(mappings);
+      onPublishTargetStateChange?.(targets, mappings);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load publishing integrations.';
+      setPublishingIntegrationsError(message);
+      setSocialConnections([]);
+      setSocialTargets([]);
+      setBusinessPublishTargets([]);
+      onPublishTargetStateChange?.([], []);
+    } finally {
+      setLoadedPublishingIntegrationsBusinessId(loadBusinessKey);
+      setLoadingPublishingIntegrations(false);
+    }
+  }, [activeBusinessId, onPublishTargetStateChange]);
+
+  useEffect(() => {
+    void loadPublishingIntegrations();
+  }, [loadPublishingIntegrations]);
+
+  function notifyIntegration(message: string, title: string, type: ToastType) {
+    setPublishingIntegrationsNotice(type === 'success' ? message : null);
+    onNotify?.({ message, title, type });
+  }
+
+  async function handleCreateFakeConnection(provider: 'meta' | 'google_business') {
+    const actionKey = provider === 'meta' ? 'connect-fake-meta' : 'connect-fake-google';
+    setPublishingIntegrationsBusyAction(actionKey);
+    setPublishingIntegrationsError(null);
+    setPublishingIntegrationsNotice(null);
+    try {
+      await (provider === 'meta' ? createFakeMetaConnection() : createFakeGoogleConnection());
+      await loadPublishingIntegrations();
+      notifyIntegration(
+        provider === 'meta' ? 'Fake Meta targets are available.' : 'Fake Google Business target is available.',
+        'Connection created',
+        'success',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to create fake connection.';
+      setPublishingIntegrationsError(message);
+      notifyIntegration(message, 'Connection failed', 'error');
+    } finally {
+      setPublishingIntegrationsBusyAction(null);
+    }
+  }
+
+  async function handleDisconnectConnection(connection: SocialConnection) {
+    const confirmed = window.confirm(`Disconnect ${connection.account_label}? Assigned targets from this connection will be removed.`);
+    if (!confirmed) return;
+    setPublishingIntegrationsBusyAction(`disconnect:${connection.id}`);
+    setPublishingIntegrationsError(null);
+    setPublishingIntegrationsNotice(null);
+    try {
+      await disconnectSocialConnection(connection.id);
+      await loadPublishingIntegrations();
+      notifyIntegration(`${connection.account_label} disconnected.`, 'Connection disconnected', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to disconnect connection.';
+      setPublishingIntegrationsError(message);
+      notifyIntegration(message, 'Disconnect failed', 'error');
+    } finally {
+      setPublishingIntegrationsBusyAction(null);
+    }
+  }
+
+  async function handleAssignBusinessTarget(platform: PublishTargetPlatform, socialTargetId: string) {
+    if (!activeBusinessId) {
+      setPublishingIntegrationsError('Select or create an active business before assigning publish targets.');
+      return;
+    }
+    const existingMapping = businessPublishTargets.find((mapping) => mapping.platform === platform);
+    if (!socialTargetId) {
+      if (existingMapping) {
+        await handleUnassignBusinessTarget(platform);
+      }
+      return;
+    }
+    setPublishingIntegrationsBusyAction(`assign:${platform}`);
+    setPublishingIntegrationsError(null);
+    setPublishingIntegrationsNotice(null);
+    try {
+      await assignBusinessPublishTarget(activeBusinessId, platform, socialTargetId);
+      await loadPublishingIntegrations();
+      notifyIntegration(`${platform} target assigned to ${activeBusiness?.name ?? 'active business'}.`, 'Target assigned', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Unable to assign ${platform} target.`;
+      setPublishingIntegrationsError(message);
+      notifyIntegration(message, 'Assignment failed', 'error');
+    } finally {
+      setPublishingIntegrationsBusyAction(null);
+    }
+  }
+
+  async function handleUnassignBusinessTarget(platform: PublishTargetPlatform) {
+    if (!activeBusinessId) return;
+    const existingMapping = businessPublishTargets.find((mapping) => mapping.platform === platform);
+    if (!existingMapping) return;
+    setPublishingIntegrationsBusyAction(`unassign:${platform}`);
+    setPublishingIntegrationsError(null);
+    setPublishingIntegrationsNotice(null);
+    try {
+      await unassignBusinessPublishTarget(activeBusinessId, platform);
+      await loadPublishingIntegrations();
+      notifyIntegration(`${platform} target removed from ${activeBusiness?.name ?? 'active business'}.`, 'Target removed', 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Unable to remove ${platform} target.`;
+      setPublishingIntegrationsError(message);
+      notifyIntegration(message, 'Remove target failed', 'error');
+    } finally {
+      setPublishingIntegrationsBusyAction(null);
+    }
+  }
+
+  function getTargetsForPlatform(platform: PublishTargetPlatform) {
+    return socialTargets.filter((target) => target.platform === platform);
+  }
+
+  function getAssignedTarget(platform: PublishTargetPlatform) {
+    const mapping = businessPublishTargets.find((item) => item.platform === platform);
+    if (!mapping) return null;
+    return socialTargets.find((target) => target.id === mapping.social_target_id) ?? null;
+  }
+
+  function scrollToAssignments() {
+    document.getElementById('publish-target-assignments')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 
   return (
     <section className="panel settings-panel">
@@ -6179,6 +6589,190 @@ function SettingsSection({
             onChange={(event) => onThemeChange(event.currentTarget.checked ? 'dark' : 'light')}
           />
         </label>
+        <div className="settings-row settings-integrations-row">
+          <div className="settings-integrations-heading">
+            <strong>Publishing Integrations</strong>
+            <span>Connect fake provider accounts and choose publish targets for the active business.</span>
+          </div>
+
+          <div className="settings-integrations-status-row">
+            {showPublishingIntegrationsLoading ? <span className="loading-label">Loading integrations</span> : null}
+            {publishingIntegrationsNotice ? <span className="settings-integrations-notice">{publishingIntegrationsNotice}</span> : null}
+          </div>
+
+          {publishingIntegrationsError ? (
+            <div className="photo-library-alert" role="alert">
+              {publishingIntegrationsError}
+            </div>
+          ) : null}
+
+          <div className="publishing-integration-grid">
+            <article className="publishing-integration-card">
+              <div>
+                <strong>Meta Business</strong>
+                <span>Facebook Pages + Instagram Professional Accounts</span>
+              </div>
+              <div className="publishing-integration-targets">
+                <span>Fake targets</span>
+                {socialTargets.filter((target) => target.provider === 'meta').length > 0 ? (
+                  <ul>
+                    {socialTargets
+                      .filter((target) => target.provider === 'meta')
+                      .map((target) => (
+                        <li key={target.id}>{target.display_name}</li>
+                      ))}
+                  </ul>
+                ) : (
+                  <em>Connect Fake Meta to create fake page and Instagram targets.</em>
+                )}
+              </div>
+              <div className="publishing-integration-actions">
+                {metaConnection ? (
+                  <>
+                    <button type="button" onClick={scrollToAssignments}>
+                      Manage/Assign targets
+                    </button>
+                    <button
+                      disabled={publishingIntegrationsBusyAction === `disconnect:${metaConnection.id}`}
+                      type="button"
+                      onClick={() => void handleDisconnectConnection(metaConnection)}
+                    >
+                      Disconnect
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    disabled={publishingIntegrationsBusyAction === 'connect-fake-meta'}
+                    type="button"
+                    onClick={() => void handleCreateFakeConnection('meta')}
+                  >
+                    {publishingIntegrationsBusyAction === 'connect-fake-meta' ? 'Connecting...' : 'Connect Fake Meta'}
+                  </button>
+                )}
+              </div>
+            </article>
+
+            <article className="publishing-integration-card">
+              <div>
+                <strong>Google Business Profile</strong>
+                <span>Google locations and local posts</span>
+              </div>
+              <div className="publishing-integration-targets">
+                <span>Fake targets</span>
+                {socialTargets.filter((target) => target.provider === 'google_business').length > 0 ? (
+                  <ul>
+                    {socialTargets
+                      .filter((target) => target.provider === 'google_business')
+                      .map((target) => (
+                        <li key={target.id}>{target.display_name}</li>
+                      ))}
+                  </ul>
+                ) : (
+                  <em>Connect Fake Google Business to create a fake location target.</em>
+                )}
+              </div>
+              <div className="publishing-integration-actions">
+                {googleConnection ? (
+                  <>
+                    <button type="button" onClick={scrollToAssignments}>
+                      Manage/Assign target
+                    </button>
+                    <button
+                      disabled={publishingIntegrationsBusyAction === `disconnect:${googleConnection.id}`}
+                      type="button"
+                      onClick={() => void handleDisconnectConnection(googleConnection)}
+                    >
+                      Disconnect
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    disabled={publishingIntegrationsBusyAction === 'connect-fake-google'}
+                    type="button"
+                    onClick={() => void handleCreateFakeConnection('google_business')}
+                  >
+                    {publishingIntegrationsBusyAction === 'connect-fake-google'
+                      ? 'Connecting...'
+                      : 'Connect Fake Google Business'}
+                  </button>
+                )}
+              </div>
+            </article>
+
+            <article className="publishing-integration-card publishing-integration-card-manual">
+              <div>
+                <strong>Facebook Groups</strong>
+                <span>Manual posting assistant only</span>
+              </div>
+              <p>Use the current copy/share/manual assistant for Facebook Groups. No automatic publish target is created.</p>
+              <span className="manual-post-pill">Manual only</span>
+            </article>
+          </div>
+
+          <div className="publish-target-assignment-panel" id="publish-target-assignments">
+            <div className="publish-target-assignment-heading">
+              <div>
+                <strong>{activeBusiness ? `Assigned targets for ${activeBusiness.name}` : 'Assigned targets'}</strong>
+                <span>Each business chooses its own targets from the owner's fake connections.</span>
+              </div>
+            </div>
+            <div className="publish-target-state-grid">
+              {publishTargetPlatforms.map((platform) => {
+                const assignedTarget = getAssignedTarget(platform);
+                return (
+                  <div className="publish-target-state-card" key={platform}>
+                    <span>{platform}</span>
+                    <strong>{assignedTarget ? assignedTarget.display_name : 'Missing'}</strong>
+                  </div>
+                );
+              })}
+              <div className="publish-target-state-card publish-target-state-card-manual">
+                <span>Facebook Groups</span>
+                <strong>Manual only</strong>
+              </div>
+            </div>
+            <div className="publish-target-selector-grid">
+              {publishTargetPlatforms.map((platform) => {
+                const assignedTarget = getAssignedTarget(platform);
+                const platformTargets = getTargetsForPlatform(platform);
+                const busy =
+                  publishingIntegrationsBusyAction === `assign:${platform}` ||
+                  publishingIntegrationsBusyAction === `unassign:${platform}`;
+                return (
+                  <label className="form-field" key={platform}>
+                    <span>{platform}</span>
+                    <select
+                      disabled={!activeBusinessId || busy || platformTargets.length === 0}
+                      value={assignedTarget?.id ?? ''}
+                      onChange={(event) => void handleAssignBusinessTarget(platform, event.currentTarget.value)}
+                    >
+                      <option value="">Missing target</option>
+                      {platformTargets.map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.display_name}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      {platformTargets.length === 0
+                        ? 'Connect a fake provider first.'
+                        : assignedTarget
+                          ? 'Assigned for this business.'
+                          : 'No target assigned for this business.'}
+                    </small>
+                    <button
+                      disabled={!activeBusinessId || busy || !assignedTarget}
+                      type="button"
+                      onClick={() => void handleUnassignBusinessTarget(platform)}
+                    >
+                      Unassign
+                    </button>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -7303,23 +7897,21 @@ function SavedGeneratedPostsSection({
   filter,
   loading,
   posts,
-  totalCount,
   onFilterChange,
 }: {
   activeBusiness: Business | null;
   filter: SavedGeneratedPostFilter;
   loading: boolean;
   posts: GeneratedPost[];
-  totalCount: number;
   onFilterChange: (filter: SavedGeneratedPostFilter) => void;
 }) {
-  const filters: SavedGeneratedPostFilter[] = ['all', 'reach', 'review', 'intro'];
+  const filters: SavedGeneratedPostFilter[] = ['all', 'reach', 'review', 'intro', 'recent-work'];
 
   return (
     <section className="saved-posts-section" aria-labelledby="saved-posts-title">
       <div className="saved-posts-heading">
         <div>
-          <h3 id="saved-posts-title">Saved Generated Posts</h3>
+          <h3 id="saved-posts-title">Saved Posts</h3>
           <p>{activeBusiness ? activeBusiness.name : 'Select a business to load saved posts.'}</p>
         </div>
         {loading ? <span className="loading-label">Loading</span> : null}
@@ -7332,7 +7924,7 @@ function SavedGeneratedPostsSection({
             type="button"
             onClick={() => onFilterChange(option)}
           >
-            {option === 'all' ? `All (${totalCount})` : generatedPostToolLabel(option)}
+            {option === 'all' ? 'All' : generatedPostToolLabel(option)}
           </button>
         ))}
       </div>
@@ -7380,6 +7972,7 @@ function VisibilityToolModal({
   onChange,
   onCopy,
   onGenerate,
+  onRefine,
   onSave,
   onOutputChange,
 }: {
@@ -7398,6 +7991,7 @@ function VisibilityToolModal({
   onChange: (field: keyof VisibilityToolFormData, value: string | string[]) => void;
   onCopy: () => void;
   onGenerate: () => void;
+  onRefine: (refinement: VisibilityRefinement) => void;
   onSave: () => void;
   onOutputChange: (output: string) => void;
 }) {
@@ -7411,12 +8005,74 @@ function VisibilityToolModal({
     : '';
   const localReachDestinations = enabledDestinations.length > 0 ? enabledDestinations : localReachDestinationOptions;
   const supportsSaving = Boolean(visibilityToolTypeForPost(tool.id));
+  const hasOutput = Boolean(formatVisibilityResponseForCopy(output).trim());
+  const reviewToneOptions = ['Friendly', 'Professional', 'Short'];
+  const readableOutput = output?.primary ?? '';
+  const photoSelectionLabel = tool.id === 'recent-work-post' ? 'Select photo/project' : 'Choose a photo to include';
+
+  function renderChoiceChips<T extends string>(
+    label: string,
+    value: T | string,
+    options: T[],
+    onSelect: (nextValue: T) => void,
+  ) {
+    return (
+      <fieldset className="visibility-choice-group">
+        <legend>{label}</legend>
+        <div className="visibility-chip-row">
+          {options.map((option) => (
+            <button
+              aria-pressed={value === option}
+              className={`choice-chip ${value === option ? 'choice-chip-active' : ''}`}
+              key={option}
+              type="button"
+              onClick={() => onSelect(option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+    );
+  }
+
+  function renderPhotoSelector(label: string) {
+    return (
+      <fieldset className="photo-selector-field">
+        <legend>{label}</legend>
+        {photoAssets.length > 0 ? (
+          <div className="photo-selector-grid">
+            {photoAssets.map((asset) => {
+              const previewUrl = getPhotoAssetPreviewUrl(asset);
+              const assetLabel = [asset.title, asset.service_type, asset.location].filter(Boolean).join(' - ');
+              return (
+                <button
+                  aria-pressed={formData.photoAssetId === asset.id}
+                  className={`photo-selector-card ${formData.photoAssetId === asset.id ? 'photo-selector-card-active' : ''}`}
+                  key={asset.id}
+                  type="button"
+                  onClick={() => onChange('photoAssetId', formData.photoAssetId === asset.id ? '' : asset.id)}
+                >
+                  {previewUrl ? <img alt="" src={previewUrl} /> : <span className="photo-selector-placeholder">Photo</span>}
+                  <span>{assetLabel || 'Photo asset'}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="empty-cell">No photo assets available yet.</p>
+        )}
+        {selectedPhotoLabel ? <small>{selectedPhotoLabel}</small> : null}
+      </fieldset>
+    );
+  }
 
   return (
     <section className="visibility-tool-workbench" aria-labelledby="visibility-tool-title">
       <div className="visibility-workbench-heading">
         <div>
           <h2 id="visibility-tool-title">{tool.title}</h2>
+          <p>{tool.description}</p>
         </div>
         {tool.id === 'local-reach-post' && formData.destination === 'Facebook Group' ? (
           <span className="manual-post-pill">Manual posting only</span>
@@ -7437,27 +8093,14 @@ function VisibilityToolModal({
         <div className="visibility-tool-form">
           {tool.id === 'local-reach-post' ? (
             <>
+              {renderChoiceChips('Where do you want to post this?', formData.destination, localReachDestinations, (destination) =>
+                onChange('destination', destination),
+              )}
+              <div className="visibility-form-section">
+                <h3>What should the post focus on?</h3>
+              </div>
               <label className="form-field">
-                <span>Post destination</span>
-                <select
-                  value={formData.destination}
-                  onChange={(event) => onChange('destination', event.target.value)}
-                >
-                  {localReachDestinations.map((destination) => (
-                    <option key={destination}>{destination}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Post type</span>
-                <select value={formData.postType} onChange={(event) => onChange('postType', event.target.value)}>
-                  {localReachPostTypeOptions.map((postType) => (
-                    <option key={postType}>{postType}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Service focus</span>
+                <span>Service</span>
                 <input
                   list={serviceListId}
                   value={formData.serviceFocus}
@@ -7465,32 +8108,48 @@ function VisibilityToolModal({
                 />
               </label>
               <label className="form-field">
-                <span>Location/service area</span>
+                <span>Area</span>
                 <input
                   list={locationListId}
                   value={formData.location}
                   onChange={(event) => onChange('location', event.target.value)}
                 />
               </label>
+              <label className="form-field form-field-wide">
+                <span>Anything specific to mention?</span>
+                <textarea
+                  value={formData.notes}
+                  onChange={(event) => onChange('notes', event.target.value)}
+                />
+              </label>
+            </>
+          ) : null}
+
+          {tool.id === 'recent-work-post' ? (
+            <>
+              {supportsPhoto ? renderPhotoSelector(photoSelectionLabel) : null}
               <label className="form-field">
-                <span>Goal</span>
-                <select value={formData.goal} onChange={(event) => onChange('goal', event.target.value)}>
-                  {localReachGoalOptions.map((goal) => (
-                    <option key={goal}>{goal}</option>
-                  ))}
-                </select>
+                <span>Service</span>
+                <input
+                  list={serviceListId}
+                  value={formData.serviceFocus}
+                  onChange={(event) => onChange('serviceFocus', event.target.value)}
+                />
               </label>
               <label className="form-field">
-                <span>Tone</span>
-                <select value={formData.tone} onChange={(event) => onChange('tone', event.target.value)}>
-                  {localReachToneOptions.map((tone) => (
-                    <option key={tone}>{tone}</option>
-                  ))}
-                </select>
+                <span>Area</span>
+                <input
+                  list={locationListId}
+                  value={formData.location}
+                  onChange={(event) => onChange('location', event.target.value)}
+                />
               </label>
-              <label className="form-field">
-                <span>CTA</span>
-                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
+              <label className="form-field form-field-wide">
+                <span>What was done?</span>
+                <textarea
+                  value={formData.notes}
+                  onChange={(event) => onChange('notes', event.target.value)}
+                />
               </label>
             </>
           ) : null}
@@ -7500,7 +8159,7 @@ function VisibilityToolModal({
               <label className="form-field">
                 <span>Customer name</span>
                 <input
-                  placeholder="Customer name"
+                  placeholder="Optional"
                   value={formData.customerName}
                   onChange={(event) => onChange('customerName', event.target.value)}
                 />
@@ -7513,18 +8172,11 @@ function VisibilityToolModal({
                   onChange={(event) => onChange('jobCompleted', event.target.value)}
                 />
               </label>
-              <label className="form-field">
-                <span>Tone</span>
-                <select value={formData.tone} onChange={(event) => onChange('tone', event.target.value)}>
-                  <option>Friendly and professional</option>
-                  <option>Warm and personal</option>
-                  <option>Short and direct</option>
-                </select>
-              </label>
+              {renderChoiceChips('Tone', formData.tone, reviewToneOptions, (tone) => onChange('tone', tone))}
               <label className="form-field form-field-wide">
                 <span>Review link</span>
                 <input
-                  placeholder="Google review link"
+                  placeholder="Optional Google review link"
                   value={formData.reviewLink}
                   onChange={(event) => onChange('reviewLink', event.target.value)}
                 />
@@ -7535,7 +8187,7 @@ function VisibilityToolModal({
           {tool.id === 'business-intro-post' ? (
             <>
               <label className="form-field">
-                <span>Location/community</span>
+                <span>Area/community</span>
                 <input
                   list={locationListId}
                   value={formData.location}
@@ -7543,136 +8195,59 @@ function VisibilityToolModal({
                 />
               </label>
               <label className="form-field">
-                <span>Services to mention</span>
+                <span>Main services</span>
                 <input
                   value={formData.servicesToMention}
                   onChange={(event) => onChange('servicesToMention', event.target.value)}
                 />
               </label>
               <label className="form-field form-field-wide">
-                <span>Business background/why choose us</span>
+                <span>What makes the business trustworthy or different?</span>
                 <textarea
                   value={formData.businessBackground}
                   onChange={(event) => onChange('businessBackground', event.target.value)}
                 />
               </label>
-              <label className="form-field">
-                <span>CTA</span>
-                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
-              </label>
-            </>
-          ) : null}
-
-          {tool.id === 'craigslist-service-ad' ? (
-            <>
-              <label className="form-field">
-                <span>Service focus</span>
-                <input
-                  list={serviceListId}
-                  value={formData.serviceFocus}
-                  onChange={(event) => onChange('serviceFocus', event.target.value)}
-                />
-              </label>
-              <label className="form-field">
-                <span>Location/service area</span>
-                <input
-                  list={locationListId}
-                  value={formData.location}
-                  onChange={(event) => onChange('location', event.target.value)}
-                />
-              </label>
-              <label className="form-field form-field-wide">
-                <span>Offer/promo details</span>
-                <textarea
-                  value={formData.offerDetails}
-                  onChange={(event) => onChange('offerDetails', event.target.value)}
-                />
-              </label>
-              <label className="form-field">
-                <span>Customer pain point</span>
-                <input
-                  value={formData.customerPainPoint}
-                  onChange={(event) => onChange('customerPainPoint', event.target.value)}
-                />
-              </label>
-              <label className="form-field">
-                <span>CTA</span>
-                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
-              </label>
-              <label className="form-field form-field-wide">
-                <span>Trust signals</span>
-                <textarea
-                  value={formData.trustSignals}
-                  onChange={(event) => onChange('trustSignals', event.target.value)}
-                />
-              </label>
-              <label className="form-field">
-                <span>Phone or website</span>
-                <input value={formData.contact} onChange={(event) => onChange('contact', event.target.value)} />
-              </label>
-              <label className="form-field form-field-wide">
-                <span>Notes/context</span>
-                <textarea value={formData.notes} onChange={(event) => onChange('notes', event.target.value)} />
-              </label>
             </>
           ) : null}
 
           {supportsPhoto && tool.id === 'local-reach-post' ? (
-            <label className="form-field form-field-wide">
-              <span>Optional photo asset</span>
-              <select value={formData.photoAssetId} onChange={(event) => onChange('photoAssetId', event.target.value)}>
-                <option value="">No photo selected</option>
-                {photoAssets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>
-                    {[asset.title, asset.service_type, asset.location].filter(Boolean).join(' - ')}
-                  </option>
-                ))}
-              </select>
-              {selectedPhotoLabel ? <small>{selectedPhotoLabel}</small> : null}
-            </label>
+            renderPhotoSelector('Choose a photo to include')
           ) : null}
 
-          {tool.id === 'craigslist-service-ad' ? (
-            <fieldset className="option-group">
-              <legend>Select 5-6 photo assets</legend>
-              <div className="checkbox-grid content-type-grid">
-                {photoAssets.map((asset) => (
-                  <label className="checkbox-card" key={asset.id}>
-                    <input
-                      checked={formData.selectedPhotoAssetIds.includes(asset.id)}
-                      disabled={
-                        !formData.selectedPhotoAssetIds.includes(asset.id) &&
-                        formData.selectedPhotoAssetIds.length >= 6
-                      }
-                      type="checkbox"
-                      onChange={() => {
-                        const selected = formData.selectedPhotoAssetIds.includes(asset.id);
-                        onChange(
-                          'selectedPhotoAssetIds',
-                          selected
-                            ? formData.selectedPhotoAssetIds.filter((id) => id !== asset.id)
-                            : [...formData.selectedPhotoAssetIds, asset.id].slice(0, 6),
-                        );
-                      }}
-                    />
-                    <span>{[asset.title, asset.service_type, asset.location].filter(Boolean).join(' - ')}</span>
-                  </label>
-                ))}
-              </div>
-              {photoAssets.length === 0 ? <p className="empty-cell">No photo assets available yet.</p> : null}
-            </fieldset>
-          ) : null}
-
-          {tool.id === 'local-reach-post' ? (
-            <label className="form-field form-field-wide">
-              <span>Notes/context</span>
-              <textarea
-                placeholder="Add project details, offer, seasonal angle, neighborhood context, or anything the copy should include."
-                value={formData.notes}
-                onChange={(event) => onChange('notes', event.target.value)}
-              />
-            </label>
-          ) : null}
+          <details className="visibility-advanced-options">
+            <summary>Advanced options</summary>
+            <div className="visibility-advanced-grid">
+              {tool.id !== 'review-request'
+                ? renderChoiceChips('Tone', formData.tone, localReachToneOptions, (tone) => onChange('tone', tone))
+                : null}
+              {tool.id === 'recent-work-post' || tool.id === 'business-intro-post'
+                ? renderChoiceChips('Post destination', formData.destination, localReachDestinations, (destination) =>
+                    onChange('destination', destination),
+                  )
+                : null}
+              <label className="form-field">
+                <span>CTA override</span>
+                <input value={formData.cta} onChange={(event) => onChange('cta', event.target.value)} />
+              </label>
+              <label className="form-field">
+                <span>Post type</span>
+                <select value={formData.postType} onChange={(event) => onChange('postType', event.target.value)}>
+                  {localReachPostTypeOptions.map((postType) => (
+                    <option key={postType}>{postType}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Goal</span>
+                <select value={formData.goal} onChange={(event) => onChange('goal', event.target.value)}>
+                  {localReachGoalOptions.map((goal) => (
+                    <option key={goal}>{goal}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </details>
         </div>
 
         {error ? (
@@ -7681,24 +8256,56 @@ function VisibilityToolModal({
           </div>
         ) : null}
 
+        <div className="modal-actions visibility-tool-actions">
+          <button type="button" onClick={onCancel}>
+            Reset
+          </button>
+          <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
+            {generating ? 'Generating...' : hasOutput ? 'Regenerate' : 'Generate Copy'}
+          </button>
+        </div>
+
         <section className="visibility-output-preview">
           <div className="visibility-output-heading">
-            <span>Generated output</span>
+            <span>Generated Copy</span>
             {output?.generationMode ? (
               <em className={`generation-mode-badge generation-mode-${output.generationMode}`}>
                 {output.generationMode === 'llm' ? 'AI generated' : 'Fallback generated'}
               </em>
             ) : null}
-            <button className="secondary-button" disabled={!formatVisibilityResponseForCopy(output).trim()} type="button" onClick={onCopy}>
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
+            <div className="visibility-output-actions">
+              <button disabled={!hasOutput} type="button" onClick={onCopy}>
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+              {supportsSaving ? (
+                <button disabled={generating || saving || !hasOutput} type="button" onClick={onSave}>
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
+              ) : null}
+              <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
+                {generating ? 'Generating...' : 'Regenerate'}
+              </button>
+            </div>
           </div>
           {output ? (
             <div className="visibility-output-sections">
-              <label className="form-field form-field-wide">
-                <span>Primary output</span>
-                <textarea value={output.primary ?? ''} onChange={(event) => onOutputChange(event.target.value)} />
+              <label className="form-field form-field-wide visibility-primary-output">
+                <textarea value={readableOutput} onChange={(event) => onOutputChange(event.target.value)} />
               </label>
+              <div className="visibility-refinement-row" role="group" aria-label="Quick refinements">
+                <button disabled={generating} type="button" onClick={() => onRefine('shorter')}>
+                  Make shorter
+                </button>
+                <button disabled={generating} type="button" onClick={() => onRefine('friendlier')}>
+                  Make friendlier
+                </button>
+                <button disabled={generating} type="button" onClick={() => onRefine('professional')}>
+                  Make more professional
+                </button>
+                <button disabled={generating} type="button" onClick={() => onRefine('stronger-cta')}>
+                  Add stronger CTA
+                </button>
+              </div>
               {output.shortVersion ? (
                 <div className="visibility-output-block">
                   <strong>Short version</strong>
@@ -7746,24 +8353,6 @@ function VisibilityToolModal({
             <p>Generated copy will appear here after you fill the form and click Generate.</p>
           )}
         </section>
-
-        <div className="modal-actions visibility-tool-actions">
-          <button type="button" onClick={onCancel}>
-            Reset
-          </button>
-          {supportsSaving ? (
-            <button
-              disabled={generating || saving || !formatVisibilityResponseForCopy(output).trim()}
-              type="button"
-              onClick={onSave}
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-          ) : null}
-          <button className="secondary-button" disabled={generating} type="button" onClick={onGenerate}>
-            {generating ? 'Generating...' : 'Generate'}
-          </button>
-        </div>
     </section>
   );
 }
@@ -8167,11 +8756,15 @@ function PhotoAssetPickerModal({
 }
 
 function ContentSlotDetailModal({
+  businessPublishTargets,
   busyAction,
   draftTextEdits,
   editingDraftId,
+  loadingPublishTargets,
   photoAsset,
+  publishTargetsError,
   slot,
+  socialTargets,
   usesPhotoLibrary,
   onApprove,
   onCancelEdit,
@@ -8179,16 +8772,21 @@ function ContentSlotDetailModal({
   onClose,
   onDelete,
   onDraftTextChange,
+  onOpenSettings,
   onPost,
   onRegenerate,
   onSaveDraft,
   onStartEdit,
 }: {
+  businessPublishTargets: BusinessPublishTarget[];
   busyAction: BusyAction;
   draftTextEdits: Record<string, string>;
   editingDraftId: string | null;
+  loadingPublishTargets: boolean;
   photoAsset: PhotoAsset | null;
+  publishTargetsError: string | null;
   slot: ContentSlot;
+  socialTargets: SocialTarget[];
   usesPhotoLibrary: boolean;
   onApprove: (item: CampaignContentQueueItem) => Promise<void>;
   onCancelEdit: (contentId: string) => void;
@@ -8196,6 +8794,7 @@ function ContentSlotDetailModal({
   onClose: () => void;
   onDelete: (item: CampaignContentQueueItem) => Promise<void>;
   onDraftTextChange: (contentId: string, draftText: string) => void;
+  onOpenSettings: () => void;
   onPost: (item: CampaignContentQueueItem) => void;
   onRegenerate: (post: PlatformPost) => Promise<void>;
   onSaveDraft: (item: CampaignContentQueueItem) => Promise<void>;
@@ -8237,14 +8836,27 @@ function ContentSlotDetailModal({
             <span>Campaign: {slot.campaignId}</span>
             <span>Week: {slot.weekKey}</span>
             <div className="platform-badge-row">
-              {coreCalendarPlatforms.map((platform) => (
-                <span
-                  className={`platform-badge ${getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''}`}
-                  key={platform}
-                >
-                  {platform === 'Google Business' ? 'Google' : platform}
-                </span>
-              ))}
+              {coreCalendarPlatforms.map((platform) => {
+                const targetState = getPublishTargetState(
+                  platform,
+                  socialTargets,
+                  businessPublishTargets,
+                  loadingPublishTargets,
+                  publishTargetsError,
+                );
+                return (
+                  <span
+                    className={`platform-badge ${getPlatformBadgeState(slot, platform) ? 'platform-badge-active' : ''} ${getPublishTargetStateClassName(
+                      targetState,
+                    )}`}
+                    key={platform}
+                    title={targetState.detail}
+                  >
+                    {platform === 'Google Business' ? 'Google' : platform}
+                    <small>{getPublishTargetChipLabel(targetState)}</small>
+                  </span>
+                );
+              })}
             </div>
             {usesPhotoLibrary ? (
               <PhotoLibraryAssetSummary
@@ -8265,6 +8877,19 @@ function ContentSlotDetailModal({
             const item = post.item;
             const editing = editingDraftId === item.content_id;
             const actionSuffix = post.id;
+            const targetState = getPublishTargetState(
+              post.platform,
+              socialTargets,
+              businessPublishTargets,
+              loadingPublishTargets,
+              publishTargetsError,
+            );
+            const planningStatus = getPlanningStatus(item);
+            const normalizedPlanningStatus = normalizeStatus(planningStatus);
+            const published = isPublishedPlanningStatus(planningStatus);
+            const approved = item.approved === 'Yes' || normalizedPlanningStatus === 'approved';
+            const scheduled = normalizedPlanningStatus === 'scheduled';
+            const canApprove = targetState.kind !== 'manual' && !approved && !scheduled && !published;
             return (
               <details className="platform-post-section" key={post.id} open={index === 0}>
                 <summary>
@@ -8273,10 +8898,24 @@ function ContentSlotDetailModal({
                     {post.sourcePlatform !== post.platform ? (
                       <em>Shared {formatPlatformLabel(post.sourcePlatform)} post</em>
                     ) : null}
+                    <em className={`target-state-line ${getPublishTargetStateClassName(targetState)}`}>
+                      {targetState.detail}
+                    </em>
                   </span>
-                  <span className={statusClassName(getPlanningStatus(item))}>{getPlanningStatus(item)}</span>
+                  <span className={statusClassName(planningStatus)}>{planningStatus}</span>
                 </summary>
                 <div className="platform-post-body">
+                  <div className={`publish-target-callout ${getPublishTargetStateClassName(targetState)}`}>
+                    <div>
+                      <strong>{targetState.label}</strong>
+                      <span>{targetState.detail}</span>
+                    </div>
+                    {targetState.kind === 'missing' || targetState.kind === 'unavailable' ? (
+                      <button type="button" onClick={onOpenSettings}>
+                        Fix in Settings
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="platform-post-field">
                     <strong>Caption / Body</strong>
                     {editing ? (
@@ -8304,6 +8943,8 @@ function ContentSlotDetailModal({
                         Published post
                       </a>
                     ) : null}
+                    {item.external_post_id ? <span>Provider Post ID: {item.external_post_id}</span> : null}
+                    <span>Publish Attempts: {item.publish_attempts}</span>
                   </div>
                   {item.last_publish_error ? <p className="error-text">{item.last_publish_error}</p> : null}
                   {renderGoogleBusinessPublishStatus(item)}
@@ -8339,13 +8980,16 @@ function ContentSlotDetailModal({
                     >
                       Regenerate
                     </button>
-                    <button
-                      disabled={busyAction === `weekly-approve:${item.content_id}`}
-                      type="button"
-                      onClick={() => void onApprove(item)}
-                    >
-                      Approve
-                    </button>
+                    {targetState.kind !== 'manual' && !published && !approved && !scheduled ? (
+                      <button
+                        disabled={busyAction === `weekly-approve:${item.content_id}` || !canApprove}
+                        type="button"
+                        onClick={() => void onApprove(item)}
+                        title={canApprove ? 'Approve this draft' : 'This draft is not ready for approval.'}
+                      >
+                        Approve
+                      </button>
+                    ) : null}
                     <button className="secondary-button" type="button" onClick={() => onPost(item)}>
                       Post
                     </button>
@@ -8362,17 +9006,31 @@ function ContentSlotDetailModal({
               </details>
             );
           })}
-          {missingCorePlatforms.map((platform) => (
-            <details className="platform-post-section platform-post-section-empty" key={`missing:${platform}`}>
-              <summary>
-                <span>{platform}</span>
-                <span className="status-pill status-draft">Missing</span>
-              </summary>
-              <div className="platform-post-body">
-                <p>No {platform} post has been generated for this content slot yet.</p>
-              </div>
-            </details>
-          ))}
+          {missingCorePlatforms.map((platform) => {
+            const targetState = getPublishTargetState(
+              platform,
+              socialTargets,
+              businessPublishTargets,
+              loadingPublishTargets,
+              publishTargetsError,
+            );
+            return (
+              <details className="platform-post-section platform-post-section-empty" key={`missing:${platform}`}>
+                <summary>
+                  <span>
+                    {platform}
+                    <em className={`target-state-line ${getPublishTargetStateClassName(targetState)}`}>
+                      {targetState.detail}
+                    </em>
+                  </span>
+                  <span className="status-pill status-draft">Missing</span>
+                </summary>
+                <div className="platform-post-body">
+                  <p>No {platform} post has been generated for this content slot yet.</p>
+                </div>
+              </details>
+            );
+          })}
         </div>
       </section>
     </div>

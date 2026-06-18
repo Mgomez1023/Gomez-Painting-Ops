@@ -16,6 +16,7 @@ uvicorn app.main:app --reload
 ```
 
 '''Activate Virtual Environment
+cd backend
 Remove-Item -Recurse -Force .venv
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1

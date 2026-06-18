@@ -10,6 +10,7 @@ from app.services.photo_asset_service import PhotoAssetService
 from app.services.publisher_service import PublisherService
 from app.services.publishing_workflow_service import PublishingWorkflowService
 from app.services.sheets_service import SheetsService
+from app.services.social_connection_service import SocialConnectionService
 from app.services.social_queue_service import SocialQueueService
 
 
@@ -55,6 +56,10 @@ async def get_sheets_service() -> SheetsService:
 
 async def get_publisher_service() -> PublisherService:
     return PublisherService()
+
+
+async def get_social_connection_service() -> SocialConnectionService:
+    return SocialConnectionService()
 
 
 async def get_publishing_workflow_service(

@@ -23,6 +23,10 @@ import type {
   BusinessPhotoAsset,
   GeneratedPost,
   GeneratedPostPayload,
+  BusinessPublishTarget,
+  PublishTargetPlatform,
+  SocialConnection,
+  SocialTarget,
 } from './types';
 
 const API_BASE_URL =
@@ -392,4 +396,60 @@ export function runDuePublishing(): Promise<CampaignContentRunDueResponse> {
   return request<CampaignContentRunDueResponse>('/publisher/run-due', {
     method: 'POST',
   });
+}
+
+export function listSocialConnections(): Promise<SocialConnection[]> {
+  return request<SocialConnection[]>('/social-connections');
+}
+
+export function listSocialTargets(): Promise<SocialTarget[]> {
+  return request<SocialTarget[]>('/social-targets');
+}
+
+export function listBusinessPublishTargets(businessId: string): Promise<BusinessPublishTarget[]> {
+  return request<BusinessPublishTarget[]>(`/businesses/${encodeURIComponent(businessId)}/publish-targets`);
+}
+
+export function createFakeMetaConnection(): Promise<SocialConnection> {
+  return request<SocialConnection>('/social-connections/fake-meta', {
+    method: 'POST',
+  });
+}
+
+export function createFakeGoogleConnection(): Promise<SocialConnection> {
+  return request<SocialConnection>('/social-connections/fake-google', {
+    method: 'POST',
+  });
+}
+
+export function disconnectSocialConnection(connectionId: string): Promise<SocialConnection> {
+  return request<SocialConnection>(`/social-connections/${encodeURIComponent(connectionId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function assignBusinessPublishTarget(
+  businessId: string,
+  platform: PublishTargetPlatform,
+  socialTargetId: string,
+): Promise<BusinessPublishTarget> {
+  return request<BusinessPublishTarget>(
+    `/businesses/${encodeURIComponent(businessId)}/publish-targets/${encodeURIComponent(platform)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ social_target_id: socialTargetId }),
+    },
+  );
+}
+
+export function unassignBusinessPublishTarget(
+  businessId: string,
+  platform: PublishTargetPlatform,
+): Promise<BusinessPublishTarget> {
+  return request<BusinessPublishTarget>(
+    `/businesses/${encodeURIComponent(businessId)}/publish-targets/${encodeURIComponent(platform)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }

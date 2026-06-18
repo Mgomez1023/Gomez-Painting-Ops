@@ -357,3 +357,42 @@ export type SocialQueueGenerateResponse = {
   queue_items: CampaignContentQueueItem[];
   existing: boolean;
 };
+
+export type SocialConnectionProvider = 'meta' | 'google_business';
+export type PublishTargetPlatform = 'Facebook' | 'Instagram' | 'Google Business';
+
+export type SocialConnection = {
+  id: string;
+  owner_id: string;
+  provider: SocialConnectionProvider;
+  account_label: string;
+  external_account_id: string;
+  connection_kind: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SocialTarget = {
+  id: string;
+  owner_id: string;
+  connection_id: string;
+  provider: SocialConnectionProvider;
+  platform: PublishTargetPlatform;
+  target_type: string;
+  display_name: string;
+  external_target_id: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BusinessPublishTarget = {
+  id: string;
+  owner_id: string;
+  business_id: string;
+  platform: PublishTargetPlatform;
+  social_target_id: string;
+  created_at: string;
+  updated_at: string;
+};
